@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f6f7f4">
+    <meta name="description" content="Alertify takvim alarmı iPhone arayüz demosu">
+    <title>Alertify — Takvim alarmların hazır</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Alertify ana sayfa">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
+              <path d="M10 21h4" />
+              <path d="m8 3 1.5-1M16 3l-1.5-1" />
+            </svg>
+          </span>
+          <span>alertify</span>
+        </a>
+        <button class="icon-button avatar-button" type="button" aria-label="Profil">
+          <span>AF</span>
+          <i class="online-dot" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <section class="greeting" aria-labelledby="greeting-title">
+        <div>
+          <p class="eyebrow" id="today-label"></p>
+          <h1 id="greeting-title">Günün hazır.</h1>
+          <p class="greeting-copy">Sen planlarına odaklan. Alarmları biz hatırlatırız.</p>
+        </div>
+        <div class="sync-pill">
+          <span class="sync-dot" aria-hidden="true"></span>
+          Takvim eşitlendi
+        </div>
+      </section>
+
+      <section class="date-section" aria-label="Gün seç" data-page-content="calendar">
+        <div class="section-heading">
+          <h2>Takvimin</h2>
+          <button class="text-button" id="today-button" type="button">Bugüne dön</button>
+        </div>
+        <div class="date-strip" id="date-strip" role="group" aria-label="Önümüzdeki günler"></div>
+      </section>
+
+      <section class="next-alarm" aria-label="En yakın alarm" data-page-content="calendar">
+        <div class="next-alarm-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
+            <path d="M10 21h4" />
+          </svg>
+        </div>
+        <div class="next-alarm-copy">
+          <span class="next-label">OTOMATİK KURULAN SONRAKİ ALARM</span>
+          <strong id="next-alarm-time">--:--</strong>
+          <span id="next-alarm-title">Bir sonraki etkinliğin için</span>
+        </div>
+        <span class="next-countdown" id="next-countdown">10 dk önce</span>
+        <div class="next-decoration" aria-hidden="true"></div>
+      </section>
+
+      <section class="agenda-section" aria-labelledby="agenda-title" data-page-content="calendar">
+        <div class="section-heading agenda-heading">
+          <div>
+            <h2 id="agenda-title">Yaklaşan etkinlikler</h2>
+            <p class="section-caption" id="agenda-caption"></p>
+          </div>
+          <button class="icon-button refresh-button" id="refresh-button" type="button" aria-label="Takvimi yenile">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M20 7v5h-5M4 17v-5h5" />
+              <path d="M5.5 9a7 7 0 0 1 11.6-2L20 12M4 12l2.9 5a7 7 0 0 0 11.6-2" />
+            </svg>
+          </button>
+        </div>
+        <div class="event-list" id="event-list" aria-live="polite"></div>
+      </section>
+
+      <section class="secondary-page" id="alarms-page" data-page-content="alarms" hidden>
+        <div class="section-heading secondary-heading">
+          <div>
+            <h2>Kurulu alarmlar</h2>
+            <p class="section-caption">Seçtiğin süreye göre otomatik</p>
+          </div>
+          <span class="alarm-total" id="alarm-total">0 alarm</span>
+        </div>
+        <div class="event-list" id="alarms-list"></div>
+      </section>
+
+      <section class="secondary-page" id="settings-page" data-page-content="settings" hidden>
+        <div class="secondary-heading">
+          <h2>Ayarlar</h2>
+          <p class="section-caption">Alertify tercihlerin</p>
+        </div>
+        <div class="settings-list">
+          <article class="setting-row">
+            <span class="setting-icon" aria-hidden="true">♧</span>
+            <span class="setting-copy">
+              <strong>Takvim kaynağı</strong>
+              <span>iPhone Takvim · Google eşitlenmiş takvimler</span>
+            </span>
+            <span class="setting-value">Bağlı</span>
+          </article>
+          <article class="setting-row">
+            <span class="setting-icon" aria-hidden="true">◎</span>
+            <span class="setting-copy">
+              <strong>Saat dilimi</strong>
+              <span>Etkinliğin bulunduğu yerin saati</span>
+            </span>
+            <span class="setting-value setting-check" aria-label="Açık">✓</span>
+          </article>
+        </div>
+        <div class="alarm-settings-card">
+          <div class="alarm-settings-heading">
+            <span class="setting-icon" aria-hidden="true">◷</span>
+            <span class="setting-copy">
+              <strong>Otomatik alarm zamanı</strong>
+              <span>Toplantı başlamadan ne kadar önce çalsın?</span>
+            </span>
+          </div>
+          <label class="control-label" for="alarm-preset">Etkinlikten önce</label>
+          <select class="alarm-select" id="alarm-preset">
+            <option value="5">5 dakika önce</option>
+            <option value="10">10 dakika önce</option>
+            <option value="15">15 dakika önce</option>
+            <option value="30">30 dakika önce</option>
+            <option value="60">1 saat önce</option>
+            <option value="custom">Özel süre</option>
+          </select>
+          <div class="custom-time" id="custom-time" hidden>
+            <label class="control-label" for="custom-minutes">Özel süre · 1 dakika–24 saat</label>
+            <div class="custom-input-wrap">
+              <input id="custom-minutes" type="number" inputmode="numeric" min="1" max="1440" step="1" value="10">
+              <span>dakika önce</span>
+            </div>
+          </div>
+          <p class="alarm-preview" id="alarm-preview">Alarm etkinlikten 10 dakika önce çalacak.</p>
+          <button class="save-alarm-button" id="save-alarm-button" type="button">Alarm süresini kaydet</button>
+        </div>
+        <p class="settings-footnote">Seçtiğin süre bu cihazda saklanır. iOS uygulamasında değişiklik mevcut ve sonraki otomatik alarmlara uygulanır. Bu demo örnek takvim kullanır; alarm çalmaz.</p>
+      </section>
+
+      <aside class="demo-note" data-page-content="calendar">
+        <span class="demo-note-icon" aria-hidden="true">i</span>
+        Demo görünümü · Toplantılara alarmlar otomatik planlanır
+      </aside>
+
+      <nav class="tab-bar" aria-label="Ana menü">
+        <button class="tab-item is-active" type="button" data-tab="calendar">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="3.5" y="5" width="17" height="16" rx="3" />
+            <path d="M7.5 3v4M16.5 3v4M4 9.5h16M8 13h2m4 0h2m-8 4h2" />
+          </svg>
+          <span>Takvim</span>
+        </button>
+        <button class="tab-item" type="button" data-tab="alarms">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
+            <path d="M10 21h4M5 3 3 5m16-2 2 2" />
+          </svg>
+          <span>Alarmlar</span>
+        </button>
+        <button class="tab-item" type="button" data-tab="settings">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.6.9L16 20h-3l-.2-1.2a8 8 0 0 1-1.7-.9l-1.6.7-1.5-2.4 1.4-1.1a7 7 0 0 1 0-1.9L8 12.1l1.5-2.4 1.6.7a8 8 0 0 1 1.7-.9L13 8h3l.2 1.5a8 8 0 0 1 1.6.9l1.7-.7 1.4 2.4-1.5 1.1a7 7 0 0 1 0 1.8Z" transform="translate(-1 -2)" />
+          </svg>
+          <span>Ayarlar</span>
+        </button>
+      </nav>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
