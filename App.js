@@ -86,12 +86,11 @@ function dateForOffset(offset) {
   return date;
 }
 
-// ICS / iCal Tarih Ayrıştırıcı (Google Takvim formatları için)
+// ICS / iCal Tarih Ayrıştırıcı
 function parseICSDate(str) {
   if (!str) return null;
   const clean = str.replace(/\r/g, "").trim();
 
-  // YYYYMMDDTHHmmssZ (UTC)
   if (clean.includes("T") && clean.endsWith("Z")) {
     const y = parseInt(clean.slice(0, 4), 10);
     const m = parseInt(clean.slice(4, 6), 10) - 1;
@@ -102,7 +101,6 @@ function parseICSDate(str) {
     return new Date(Date.UTC(y, m, d, h, min, s));
   }
 
-  // YYYYMMDDTHHmmss (Local)
   if (clean.includes("T")) {
     const parts = clean.split("T");
     const dPart = parts[0].slice(-8);
@@ -116,7 +114,6 @@ function parseICSDate(str) {
     return new Date(y, m, d, h, min, s);
   }
 
-  // YYYYMMDD (Tam gün)
   if (clean.length >= 8) {
     const y = parseInt(clean.slice(0, 4), 10);
     const m = parseInt(clean.slice(4, 6), 10) - 1;
@@ -127,7 +124,7 @@ function parseICSDate(str) {
   return null;
 }
 
-function parseICSData(icsText, firstMeetingMinutes, interimMinutes) {
+function parseICSData(icsText) {
   const events = [];
   const lines = icsText.split(/\r\n|\n|\r/);
   let cur = null;
@@ -198,15 +195,12 @@ async function openAppleClockApp() {
   return false;
 }
 
-// Varsayılan akıllı toplantılar (Örnek senaryo: 09:30 toplantısı)
 function getInitialSmartEvents() {
   const now = new Date();
   const events = [];
 
-  // Bugün sabah 09:30 toplantısı (Kullanıcının bahsettiği gerçek senaryo!)
   const m1 = new Date(now);
   m1.setHours(9, 30, 0, 0);
-  // Eğer saat şu an 9:30'u geçtiyse bugünden 1.5 saat sonraya ayarla
   const validM1 = m1 > now ? m1 : new Date(now.getTime() + 90 * 60_000);
 
   events.push({
@@ -261,12 +255,11 @@ function ActionButton({ label, onPress, disabled, secondary = false, icon = null
 function EventCard({
   event,
   alarmDate,
+  minutesBefore,
   isFirstOfDay,
-  alarmEnabled,
-  compact = false,
   onTriggerDirectAlarm,
+  onEditDuration,
 }) {
-  const isGoogle = event.source === "google";
   return (
     <View style={styles.eventCard}>
       <View style={styles.eventTime}>
@@ -297,10 +290,19 @@ function EventCard({
         </Text>
 
         <View style={styles.eventAlarmBadgeRow}>
-          <Text style={styles.calculatedAlarmChip}>
-            ⏰ Alarm: <Text style={{ fontWeight: "800" }}>{formatTime(alarmDate)}</Text> (
-            {isFirstOfDay ? "uyanma payı" : "önce"})
-          </Text>
+          {/* TIKLANABİLİR SÜRE AYARI */}
+          <Pressable
+            onPress={() => onEditDuration && onEditDuration(event, minutesBefore)}
+            style={({ pressed }) => [
+              styles.calculatedAlarmChip,
+              pressed && styles.pressedButton,
+            ]}
+          >
+            <Text style={styles.calculatedAlarmChipText}>
+              ⏰ Alarm: <Text style={{ fontWeight: "800" }}>{formatTime(alarmDate)}</Text> (
+              {minutesBefore} dk önce <Text style={{ color: COLORS.purple }}>✎ Değiştir</Text>)
+            </Text>
+          </Pressable>
 
           {onTriggerDirectAlarm ? (
             <Pressable
@@ -324,26 +326,24 @@ export default function App() {
   const [selectedTab, setSelectedTab] = useState("calendar");
   const [selectedDay, setSelectedDay] = useState(0);
 
-  // KULLANICININ İSTEĞİNE GÖRE ŞEKİLLENDİRİLEN SÜRELER:
-  // 1. Günün ilk toplantısı için uyanma süresi (Varsayılan 30 dk)
+  // KULLANICININ İSTEDİĞİ GİBİ ŞEKİLLENDİRİLEBİLEN ALARM SÜRELERİ:
+  // 1. Genel uyanma süresi (Varsayılan 30 dk)
   const [wakeUpMinutes, setWakeUpMinutes] = useState(30);
-  const [customWakeUpMinutes, setCustomWakeUpMinutes] = useState("30");
-  const [isCustomWakeUp, setIsCustomWakeUp] = useState(false);
-
-  // 2. Gün içi diğer toplantılar için hatırlatma süresi (Varsayılan 10 dk)
+  // 2. Gün içi diğer toplantılar için varsayılan süre (10 dk)
   const [interimMinutes, setInterimMinutes] = useState(10);
+  // 3. Toplantılara ÖZEL kullanıcı tanımlı süreler { [eventId]: minutes }
+  const [eventCustomMinutes, setEventCustomMinutes] = useState({});
 
-  // Otonom Arka Plan Takibi (Açık/Kapalı)
+  // Özel Süre Düzenleme Modalı
+  const [editingEvent, setEditingEvent] = useState(null);
+  const [modalDurationVal, setModalDurationVal] = useState("30");
+
+  // Otonom Arka Plan Takibi
   const [isAutoWatcherActive, setIsAutoWatcherActive] = useState(true);
   const [autoRescheduleAlert, setAutoRescheduleAlert] = useState(null);
 
-  const [alarmsEnabled, setAlarmsEnabled] = useState(true);
-  const [scheduledEventIDs, setScheduledEventIDs] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
   const [allEvents, setAllEvents] = useState([]);
   const [statusMessage, setStatusMessage] = useState("");
-
-  // Önceki ilk toplantı saatini hafızada tutma (Değişikliği yakalamak için)
   const prevEarliestTimeRef = useRef(null);
 
   // Google Takvim Bağlantı Modalı
@@ -351,7 +351,7 @@ export default function App() {
   const [gcalUrlInput, setGcalUrlInput] = useState("");
   const [savedGcalUrl, setSavedGcalUrl] = useState("");
 
-  // Canlı Sesli Alarm Modalı State'leri
+  // Canlı Sesli Alarm Modalı
   const [activeAlarmEvent, setActiveAlarmEvent] = useState(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -367,7 +367,6 @@ export default function App() {
     [],
   );
 
-  // Animasyon döngüsü (Alarm çalarken ikonun yanıp sönmesi)
   useEffect(() => {
     if (activeAlarmEvent) {
       Animated.loop(
@@ -389,13 +388,11 @@ export default function App() {
     }
   }, [activeAlarmEvent, pulseAnim]);
 
-  // Sesli alarmı ve titreşimi durdurma
   const stopAlarmSound = useCallback(async () => {
     Vibration.cancel();
     setActiveAlarmEvent(null);
   }, []);
 
-  // Kesintisiz alarmı ve titreşimi başlatma
   const startAlarmSound = useCallback(async (event) => {
     try {
       Vibration.vibrate([1000, 500, 1000, 500], true);
@@ -427,17 +424,26 @@ export default function App() {
     [stopAlarmSound],
   );
 
-  // Her etkinlik için özel alarm zamanını hesaplama
-  // (Günün İLK toplantısı ise wakeUpMinutes kadar önce, sonrakiler ise interimMinutes kadar önce)
-  const calculateAlarmDate = useCallback(
+  // KULLANICININ BELİRLEDİĞİ DAKİKAYI ALMA
+  // (Eğer o toplantıya özel dakika seçtiyse onu, yoksa ilk toplantı için wakeUpMinutes, sonrakiler için interimMinutes)
+  const getMinutesForEvent = useCallback(
     (event, isFirstOfDay) => {
-      const minutesBefore = isFirstOfDay ? wakeUpMinutes : interimMinutes;
-      return new Date(event.startDate.getTime() - minutesBefore * 60_000);
+      if (eventCustomMinutes[event.id] !== undefined) {
+        return eventCustomMinutes[event.id];
+      }
+      return isFirstOfDay ? wakeUpMinutes : interimMinutes;
     },
-    [wakeUpMinutes, interimMinutes],
+    [eventCustomMinutes, wakeUpMinutes, interimMinutes],
   );
 
-  // Günün ilk toplantısını bulma
+  const calculateAlarmDate = useCallback(
+    (event, isFirstOfDay) => {
+      const minutesBefore = getMinutesForEvent(event, isFirstOfDay);
+      return new Date(event.startDate.getTime() - minutesBefore * 60_000);
+    },
+    [getMinutesForEvent],
+  );
+
   const earliestUpcomingEvent = useMemo(() => {
     const now = new Date();
     const future = allEvents.filter((e) => e.startDate > now);
@@ -445,22 +451,18 @@ export default function App() {
     return future.sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0];
   }, [allEvents]);
 
-  // OTONOM CANLI İZLEYİCİ MOTORU:
-  // Senaryo: Toplantı 09:30'dan 08:50'ye çekilirse, sistem sen hiçbir şey yapmadan
-  // aradaki farkı anında yakalar, eski alarmı siler ve yeni saate göre alarmı günceller!
+  // Otonom Canlı Takip Motoru
   useEffect(() => {
     if (!isAutoWatcherActive || !earliestUpcomingEvent) return;
 
     const currentStartTimeMs = earliestUpcomingEvent.startDate.getTime();
 
     if (prevEarliestTimeRef.current !== null) {
-      // Eğer ilk toplantının saati değiştiyse!
       if (prevEarliestTimeRef.current !== currentStartTimeMs) {
         const oldDate = new Date(prevEarliestTimeRef.current);
         const newDate = earliestUpcomingEvent.startDate;
         const newAlarm = calculateAlarmDate(earliestUpcomingEvent, true);
 
-        // Eski alarmı silip yeni alarmı sisteme kur
         Notifications.cancelAllScheduledNotificationsAsync().then(() => {
           Notifications.scheduleNotificationAsync({
             content: {
@@ -475,7 +477,6 @@ export default function App() {
           });
         });
 
-        // Ekrana canlı otonom bilgi banner'ı çıkar
         setAutoRescheduleAlert({
           oldTime: formatTime(oldDate),
           newTime: formatTime(newDate),
@@ -491,35 +492,25 @@ export default function App() {
   }, [earliestUpcomingEvent, isAutoWatcherActive, calculateAlarmDate]);
 
   // Google Takviminden Etkinlikleri Çekme
-  const fetchGoogleCalendarEvents = useCallback(
-    async (url) => {
-      if (!url || !url.trim()) return [];
-      try {
-        let fetchUrl = url.trim();
-        if (fetchUrl.startsWith("webcal://")) {
-          fetchUrl = "https://" + fetchUrl.slice(9);
-        }
-
-        const res = await fetch(fetchUrl);
-        if (!res.ok) {
-          throw new Error(`Google Takvim yanıt vermedi (Kod: ${res.status})`);
-        }
-        const text = await res.text();
-        const parsed = parseICSData(text, wakeUpMinutes, interimMinutes);
-        return parsed;
-      } catch (err) {
-        console.warn("Google Takvim çekme hatası:", err);
-        throw err;
+  const fetchGoogleCalendarEvents = useCallback(async (url) => {
+    if (!url || !url.trim()) return [];
+    try {
+      let fetchUrl = url.trim();
+      if (fetchUrl.startsWith("webcal://")) {
+        fetchUrl = "https://" + fetchUrl.slice(9);
       }
-    },
-    [wakeUpMinutes, interimMinutes],
-  );
+      const res = await fetch(fetchUrl);
+      if (!res.ok) throw new Error("Takvim okunamadı.");
+      const text = await res.text();
+      return parseICSData(text);
+    } catch (err) {
+      console.warn("Google Takvim hatası:", err);
+      throw err;
+    }
+  }, []);
 
-  // Tüm Takvimleri Yükleme
   const loadAllCalendars = useCallback(async () => {
-    setIsLoading(true);
     let combinedEvents = [];
-
     const savedUrl = await SafeStorage.getItem(STORAGE_KEY_GCAL_URL);
     if (savedUrl) {
       setSavedGcalUrl(savedUrl);
@@ -579,26 +570,21 @@ export default function App() {
     setAllEvents(
       combinedEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime()),
     );
-    setIsLoading(false);
-  }, [wakeUpMinutes, interimMinutes, fetchGoogleCalendarEvents]);
+  }, [fetchGoogleCalendarEvents]);
 
   useEffect(() => {
     loadAllCalendars();
   }, [loadAllCalendars]);
 
-  // CANLI SİMÜLASYON TESTİ:
-  // "Toplantıyı 09:30'dan 08:50'ye Çek" Butonuna Basıldığında Olanlar
+  // Simülasyon Testi: Toplantıyı 40 dk öne çekme
   function simulateRescheduleEarlier() {
     if (!earliestUpcomingEvent) {
-      Alert.alert("Bilgi", "Test edilecek yaklaşan bir toplantı bulunamadı.");
+      Alert.alert("Bilgi", "Test edilecek toplantı bulunamadı.");
       return;
     }
-
-    // Toplantıyı tam 40 dakika öne çekiyoruz (09:30 ➔ 08:50 senaryosu)
     const shiftedTime = new Date(
       earliestUpcomingEvent.startDate.getTime() - 40 * 60_000,
     );
-
     setAllEvents((prev) =>
       prev.map((e) => {
         if (e.id === earliestUpcomingEvent.id) {
@@ -613,55 +599,65 @@ export default function App() {
     );
   }
 
-  // Google Takvim Linkini Kaydet
-  async function handleSaveGcalUrl() {
-    if (!gcalUrlInput.trim()) {
-      Alert.alert("Eksik Link", "Lütfen Google Takvim iCal linkinizi yapıştırın.");
+  // Toplantıya özel süre düzenleme modalını aç
+  function handleOpenEditDuration(event, currentMinutes) {
+    setEditingEvent(event);
+    setModalDurationVal(String(currentMinutes));
+  }
+
+  // Toplantıya özel süreyi kaydet
+  function handleSaveCustomEventDuration() {
+    if (!editingEvent) return;
+    const val = parseInt(modalDurationVal, 10);
+    if (isNaN(val) || val <= 0 || val > 1440) {
+      Alert.alert("Geçersiz Süre", "Lütfen 1 ile 1440 arasında bir dakika girin.");
       return;
     }
 
-    setIsLoading(true);
+    setEventCustomMinutes((prev) => ({
+      ...prev,
+      [editingEvent.id]: val,
+    }));
+    setEditingEvent(null);
+    Alert.alert(
+      "✓ Süre Güncellendi",
+      `"${editingEvent.title}" için alarm tam ${val} dakika öncesine ayarlandı.`,
+    );
+  }
+
+  async function handleSaveGcalUrl() {
+    if (!gcalUrlInput.trim()) {
+      Alert.alert("Eksik Link", "Lütfen iCal linkinizi yapıştırın.");
+      return;
+    }
     try {
       const gEvents = await fetchGoogleCalendarEvents(gcalUrlInput.trim());
       await SafeStorage.setItem(STORAGE_KEY_GCAL_URL, gcalUrlInput.trim());
       setSavedGcalUrl(gcalUrlInput.trim());
       setGcalModalVisible(false);
-
       setAllEvents((prev) => {
         const withoutOldGcal = prev.filter((e) => e.source !== "google");
         return [...withoutOldGcal, ...gEvents].sort(
           (a, b) => a.startDate.getTime() - b.startDate.getTime(),
         );
       });
-
-      Alert.alert(
-        "🎉 Bağlandı!",
-        `Google Takviminizden ${gEvents.length} toplantı çekildi. Otonom takip aktif!`,
-      );
+      Alert.alert("🎉 Bağlandı!", `${gEvents.length} toplantı çekildi.`);
     } catch {
-      Alert.alert(
-        "Bağlantı Hatası",
-        "Takvim linki okunamadı. Google Takvim 'iCal biçiminde gizli adres' bağlantısını girdiğinizden emin olun.",
-      );
-    } finally {
-      setIsLoading(false);
+      Alert.alert("Hata", "Takvim linki okunamadı.");
     }
   }
 
-  // Yeni Toplantı Ekle
   function handleAddNewEvent() {
     if (!newEventTitle.trim()) {
       Alert.alert("Eksik Bilgi", "Lütfen toplantı başlığını girin.");
       return;
     }
-
     const h = parseInt(newEventHour, 10);
     const m = parseInt(newEventMinute, 10);
     if (isNaN(h) || h < 0 || h > 23 || isNaN(m) || m < 0 || m > 59) {
       Alert.alert("Geçersiz Saat", "Saat 00-23, Dakika 00-59 arasında olmalıdır.");
       return;
     }
-
     const targetDate = new Date(days[selectedDay]);
     targetDate.setHours(h, m, 0, 0);
 
@@ -679,13 +675,10 @@ export default function App() {
     setAllEvents((prev) =>
       [...prev, newEvt].sort((a, b) => a.startDate.getTime() - b.startDate.getTime()),
     );
-
     setNewEventTitle("");
     setModalVisible(false);
-    setStatusMessage(`✓ "${newEvt.title}" toplantısı eklendi.`);
   }
 
-  // Seçilen güne ait toplantılar
   const selectedEvents = useMemo(() => {
     const targetDate = days[selectedDay];
     if (!targetDate) return [];
@@ -702,6 +695,7 @@ export default function App() {
   function renderCalendar() {
     const firstOfDay = selectedEvents[0];
     const firstAlarm = firstOfDay ? calculateAlarmDate(firstOfDay, true) : null;
+    const firstOfDayMinutes = firstOfDay ? getMinutesForEvent(firstOfDay, true) : wakeUpMinutes;
 
     return (
       <>
@@ -726,7 +720,7 @@ export default function App() {
                 <Text style={{ fontWeight: "800", color: "#b91c1c" }}>
                   {autoRescheduleAlert.newAlarmTime}
                 </Text>{" "}
-                saatine güncellendi. Sen hiçbir şey yapmadın! ✓
+                saatine güncellendi.
               </Text>
             </View>
             <Pressable
@@ -743,9 +737,9 @@ export default function App() {
             <Text style={styles.eyebrow}>
               {formatLongDate(new Date()).toLocaleUpperCase("tr-TR")}
             </Text>
-            <Text style={styles.heading}>Otonom Alarm Asistanı</Text>
+            <Text style={styles.heading}>Kişiselleştirilmiş Alarmlar</Text>
             <Text style={styles.mutedText}>
-              Sen uyurken toplantı öne çekilirse alarm otomatik olarak erken saate güncellenir.
+              Her toplantı için alarm süresini istediğin gibi kendin belirle.
             </Text>
           </View>
         </View>
@@ -763,15 +757,61 @@ export default function App() {
             <Text style={styles.wakeUpHeroSub}>SABAH UYANMA SAATİN</Text>
             <Text style={styles.wakeUpHeroAlarmTime}>{formatTime(firstAlarm)}</Text>
 
-            <View style={styles.wakeUpDivider} />
-
             <View style={styles.wakeUpMeetingInfo}>
               <Text style={styles.wakeUpMeetingTitle} numberOfLines={1}>
-                📌 İlk Toplantı: {firstOfDay.title}
+                📌 İlk Toplantı: {firstOfDay.title} ({formatTime(firstOfDay.startDate)})
               </Text>
-              <Text style={styles.wakeUpMeetingTime}>
-                Başlama: <Text style={{ fontWeight: "800" }}>{formatTime(firstOfDay.startDate)}</Text> ({wakeUpMinutes} dk uyanma payı)
+            </View>
+
+            {/* ⏱️ CANLI ALARM SÜRESİ STEPPER'I & KONTROLÜ */}
+            <View style={styles.liveDurationBox}>
+              <Text style={styles.liveDurationBoxTitle}>
+                ⏱️ Uyanma Süresini Kendin Belirle:
               </Text>
+
+              <View style={styles.stepperRow}>
+                <Pressable
+                  onPress={() => setWakeUpMinutes((prev) => Math.max(5, prev - 5))}
+                  style={styles.stepBtn}
+                >
+                  <Text style={styles.stepBtnText}>- 5 dk</Text>
+                </Pressable>
+
+                <View style={styles.stepDisplay}>
+                  <Text style={styles.stepDisplayNumber}>{wakeUpMinutes}</Text>
+                  <Text style={styles.stepDisplayLabel}>dakika önce</Text>
+                </View>
+
+                <Pressable
+                  onPress={() => setWakeUpMinutes((prev) => Math.min(180, prev + 5))}
+                  style={styles.stepBtn}
+                >
+                  <Text style={styles.stepBtnText}>+ 5 dk</Text>
+                </Pressable>
+              </View>
+
+              {/* Hızlı Seçim Chip'leri */}
+              <View style={styles.quickChipsRow}>
+                {[10, 15, 20, 30, 45, 60].map((m) => (
+                  <Pressable
+                    key={m}
+                    onPress={() => setWakeUpMinutes(m)}
+                    style={[
+                      styles.quickChip,
+                      wakeUpMinutes === m && styles.quickChipActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.quickChipText,
+                        wakeUpMinutes === m && styles.quickChipTextActive,
+                      ]}
+                    >
+                      {m} dk
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
             </View>
 
             {/* SİMÜLASYON TEST BUTONU */}
@@ -861,7 +901,7 @@ export default function App() {
               {selectedDay === 0 ? "Bugünkü Toplantılar" : formatLongDate(days[selectedDay])}
             </Text>
             <Text style={styles.sectionCaption}>
-              {selectedEvents.length} toplantı listeleniyor
+              Her toplantının alarm süresini üstüne dokunarak özelleştirebilirsin
             </Text>
           </View>
           <View style={{ flexDirection: "row", gap: 6 }}>
@@ -885,14 +925,16 @@ export default function App() {
           selectedEvents.map((event, index) => {
             const isFirst = index === 0;
             const aDate = calculateAlarmDate(event, isFirst);
+            const mins = getMinutesForEvent(event, isFirst);
             return (
               <EventCard
                 key={event.id}
                 event={event}
                 alarmDate={aDate}
+                minutesBefore={mins}
                 isFirstOfDay={isFirst}
-                alarmEnabled={alarmsEnabled}
                 onTriggerDirectAlarm={startAlarmSound}
+                onEditDuration={handleOpenEditDuration}
               />
             );
           })
@@ -929,9 +971,7 @@ export default function App() {
 
         {/* 1. GÜNÜN İLK TOPLANTISI İÇİN UYANMA SÜRESİ */}
         <View style={styles.settingsCard}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Text style={styles.settingsTitle}>🌅 Günün İlk Toplantısı Uyanma Payı</Text>
-          </View>
+          <Text style={styles.settingsTitle}>🌅 Sabah İlk Toplantı Uyanma Payı</Text>
           <Text style={styles.mutedText}>
             Sabah yataktan kalkıp hazırlanabilmen için ilk toplantıdan ne kadar önce uyandırayım?
           </Text>
@@ -940,66 +980,22 @@ export default function App() {
             {WAKE_UP_PRESETS.map((value) => (
               <Pressable
                 key={value}
-                onPress={() => {
-                  setIsCustomWakeUp(false);
-                  setWakeUpMinutes(value);
-                  setCustomWakeUpMinutes(String(value));
-                }}
+                onPress={() => setWakeUpMinutes(value)}
                 style={[
                   styles.presetButton,
-                  !isCustomWakeUp && wakeUpMinutes === value && styles.selectedPreset,
+                  wakeUpMinutes === value && styles.selectedPreset,
                 ]}
               >
                 <Text
                   style={[
                     styles.presetText,
-                    !isCustomWakeUp && wakeUpMinutes === value && styles.selectedPresetText,
+                    wakeUpMinutes === value && styles.selectedPresetText,
                   ]}
                 >
                   {value === 60 ? "1 saat" : `${value} dk`}
                 </Text>
               </Pressable>
             ))}
-            <Pressable
-              onPress={() => setIsCustomWakeUp(true)}
-              style={[styles.presetButton, isCustomWakeUp && styles.selectedPreset]}
-            >
-              <Text
-                style={[
-                  styles.presetText,
-                  isCustomWakeUp && styles.selectedPresetText,
-                ]}
-              >
-                Özel
-              </Text>
-            </Pressable>
-          </View>
-
-          {isCustomWakeUp ? (
-            <View style={styles.customInputRow}>
-              <TextInput
-                keyboardType="number-pad"
-                maxLength={4}
-                onChangeText={(val) => {
-                  setCustomWakeUpMinutes(val);
-                  const n = parseInt(val, 10);
-                  if (n > 0 && n <= 1440) setWakeUpMinutes(n);
-                }}
-                value={customWakeUpMinutes}
-                style={styles.customInput}
-              />
-              <Text style={styles.mutedText}>dakika önce uyandır</Text>
-            </View>
-          ) : null}
-
-          <View style={styles.highlightSettingBox}>
-            <Text style={styles.highlightSettingText}>
-              Seçiminiz: İlk toplantı saatinden tam{" "}
-              <Text style={{ fontWeight: "800", color: COLORS.purple }}>
-                {wakeUpMinutes} dakika önce
-              </Text>{" "}
-              alarm çalacak.
-            </Text>
           </View>
         </View>
 
@@ -1050,7 +1046,7 @@ export default function App() {
             </Pressable>
           </View>
           <Text style={styles.mutedText}>
-            Sen uyurken toplantı saati öne çekilirse sistem alarmı otomatik olarak yeni saate çeker. Sen hiçbir şeye dokunmazsın.
+            Sen uyurken toplantı saati öne çekilirse sistem alarmı otomatik olarak yeni saate çeker.
           </Text>
         </View>
 
@@ -1133,7 +1129,100 @@ export default function App() {
         </View>
       </View>
 
-      {/* 🚨 TAM EKRAN KESİNTİSİZ ÇALAN ALARM EKRANI 🚨 */}
+      {/* ⏱️ TOPLANTIYA ÖZEL SÜRE DÜZENLEME MODALI */}
+      <Modal
+        animationType="fade"
+        transparent
+        visible={editingEvent !== null}
+        onRequestClose={() => setEditingEvent(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>⏰ Alarm Süresini Belirle</Text>
+            <Text style={styles.modalSubtitle} numberOfLines={1}>
+              "{editingEvent?.title}" için
+            </Text>
+            <Text style={styles.mutedText}>
+              Bu toplantı başlamadan tam kaç dakika önce alarm çalsın?
+            </Text>
+
+            {/* Stepper Kontrolü */}
+            <View style={styles.modalStepperRow}>
+              <Pressable
+                onPress={() =>
+                  setModalDurationVal((prev) =>
+                    String(Math.max(1, (parseInt(prev, 10) || 10) - 5)),
+                  )
+                }
+                style={styles.modalStepBtn}
+              >
+                <Text style={styles.modalStepBtnText}>- 5 dk</Text>
+              </Pressable>
+
+              <View style={styles.modalStepInputWrap}>
+                <TextInput
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  value={modalDurationVal}
+                  onChangeText={setModalDurationVal}
+                  style={styles.modalStepInput}
+                />
+                <Text style={styles.modalStepInputLabel}>dakika önce</Text>
+              </View>
+
+              <Pressable
+                onPress={() =>
+                  setModalDurationVal((prev) =>
+                    String(Math.min(1440, (parseInt(prev, 10) || 10) + 5)),
+                  )
+                }
+                style={styles.modalStepBtn}
+              >
+                <Text style={styles.modalStepBtnText}>+ 5 dk</Text>
+              </Pressable>
+            </View>
+
+            {/* Hızlı Seçim Butonları */}
+            <View style={styles.modalPresetRow}>
+              {[5, 10, 15, 20, 30, 45, 60].map((m) => (
+                <Pressable
+                  key={m}
+                  onPress={() => setModalDurationVal(String(m))}
+                  style={[
+                    styles.modalPresetChip,
+                    parseInt(modalDurationVal, 10) === m &&
+                      styles.modalPresetChipActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.modalPresetChipText,
+                      parseInt(modalDurationVal, 10) === m &&
+                        styles.modalPresetChipTextActive,
+                    ]}
+                  >
+                    {m} dk
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={{ marginTop: 14 }}>
+              <ActionButton
+                label="Bu Toplantı İçin Kaydet"
+                onPress={handleSaveCustomEventDuration}
+              />
+              <ActionButton
+                label="Vazgeç"
+                onPress={() => setEditingEvent(null)}
+                secondary
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 🚨 TAM EKRAN KESİNTİSİZ ÇALAN ALARM EKRANI */}
       <Modal
         animationType="fade"
         transparent={false}
@@ -1160,7 +1249,7 @@ export default function App() {
               Toplantı: {formatTime(activeAlarmEvent?.startDate)}
             </Text>
             <Text style={styles.alarmSubtext}>
-              Toplantınıza {wakeUpMinutes} dakika kaldı! Hazırlanıp katılabilirsiniz.
+              Toplantı vaktiniz yaklaştı! Hazırlanıp katılabilirsiniz.
             </Text>
 
             <View style={styles.alarmButtonStack}>
@@ -1223,8 +1312,7 @@ export default function App() {
 
             <View style={{ marginTop: 14 }}>
               <ActionButton
-                disabled={isLoading}
-                label={isLoading ? "Çekiliyor..." : "Bağla ve Canlı Takibi Başlat"}
+                label="Bağla ve Canlı Takibi Başlat"
                 onPress={handleSaveGcalUrl}
               />
               <ActionButton
@@ -1382,7 +1470,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: 4,
   },
-  // Otonom Banner
   autoRescheduleBanner: {
     backgroundColor: "#fef2f2",
     borderWidth: 1.5,
@@ -1421,7 +1508,6 @@ const styles = StyleSheet.create({
   closeAlertBtn: {
     padding: 4,
   },
-  // Uyanma Hero Kartı
   wakeUpHeroCard: {
     backgroundColor: "#1e1b4b",
     borderRadius: 22,
@@ -1436,7 +1522,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
-    marginBottom: 10,
+    marginBottom: 8,
   },
   livePulseDot: {
     width: 8,
@@ -1462,25 +1548,81 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: -1,
     marginTop: 2,
-    marginBottom: 6,
-  },
-  wakeUpDivider: {
-    height: 1,
-    backgroundColor: "rgba(255, 255, 255, 0.15)",
-    marginVertical: 10,
+    marginBottom: 4,
   },
   wakeUpMeetingInfo: {
-    marginBottom: 12,
+    marginBottom: 10,
   },
   wakeUpMeetingTitle: {
     color: "#e0e7ff",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
   },
-  wakeUpMeetingTime: {
+  // CANLI SÜRE KUTUSU
+  liveDurationBox: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 12,
+  },
+  liveDurationBoxTitle: {
+    color: "#c7d2fe",
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  stepperRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  stepBtn: {
+    backgroundColor: "rgba(255, 255, 255, 0.18)",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  stepBtnText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  stepDisplay: {
+    alignItems: "center",
+  },
+  stepDisplayNumber: {
+    color: "#ffffff",
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  stepDisplayLabel: {
     color: "#a5b4fc",
-    fontSize: 12,
-    marginTop: 3,
+    fontSize: 10,
+  },
+  quickChipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    justifyContent: "center",
+  },
+  quickChip: {
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  quickChipActive: {
+    backgroundColor: COLORS.purple,
+  },
+  quickChipText: {
+    color: "#e0e7ff",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  quickChipTextActive: {
+    color: "#ffffff",
+    fontWeight: "800",
   },
   simulateButton: {
     backgroundColor: "rgba(255, 255, 255, 0.16)",
@@ -1495,7 +1637,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
-  // Google Takvim Banner
   gcalBanner: {
     backgroundColor: "#eff6ff",
     borderWidth: 1,
@@ -1678,12 +1819,14 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   calculatedAlarmChip: {
-    color: COLORS.greenDark,
     backgroundColor: COLORS.greenSoft,
     borderRadius: 8,
-    paddingHorizontal: 7,
-    paddingVertical: 4,
-    fontSize: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  calculatedAlarmChipText: {
+    color: COLORS.greenDark,
+    fontSize: 11,
   },
   ringNowButton: {
     flexDirection: "row",
@@ -1694,7 +1837,7 @@ const styles = StyleSheet.create({
     borderColor: "#fecaca",
     borderRadius: 8,
     paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingVertical: 5,
   },
   ringNowButtonIcon: {
     fontSize: 11,
@@ -1792,34 +1935,6 @@ const styles = StyleSheet.create({
   selectedPresetText: {
     color: COLORS.purple,
     fontWeight: "800",
-  },
-  customInputRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginTop: 12,
-  },
-  customInput: {
-    width: 76,
-    height: 40,
-    borderWidth: 1,
-    borderColor: COLORS.line,
-    borderRadius: 11,
-    paddingHorizontal: 10,
-    color: COLORS.ink,
-    fontSize: 14,
-  },
-  highlightSettingBox: {
-    backgroundColor: "#faf5ff",
-    borderWidth: 1,
-    borderColor: "#e9d5ff",
-    borderRadius: 12,
-    padding: 10,
-    marginTop: 12,
-  },
-  highlightSettingText: {
-    color: "#581c87",
-    fontSize: 12,
   },
   toggleBtn: {
     paddingHorizontal: 12,
@@ -1949,23 +2064,85 @@ const styles = StyleSheet.create({
   // Modal Stilleri
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
     padding: 20,
   },
   modalCard: {
     backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 20,
+    borderRadius: 22,
+    padding: 22,
     shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 15,
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
   },
   modalTitle: {
     color: COLORS.ink,
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: "800",
-    marginBottom: 4,
+    marginBottom: 2,
+  },
+  modalSubtitle: {
+    color: COLORS.purple,
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 6,
+  },
+  modalStepperRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginVertical: 16,
+  },
+  modalStepBtn: {
+    backgroundColor: COLORS.purpleSoft,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  modalStepBtnText: {
+    color: COLORS.purple,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  modalStepInputWrap: {
+    alignItems: "center",
+  },
+  modalStepInput: {
+    fontSize: 28,
+    fontWeight: "900",
+    color: COLORS.ink,
+    textAlign: "center",
+    minWidth: 80,
+  },
+  modalStepInputLabel: {
+    color: COLORS.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  modalPresetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  modalPresetChip: {
+    backgroundColor: COLORS.line,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  modalPresetChipActive: {
+    backgroundColor: COLORS.purple,
+  },
+  modalPresetChipText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  modalPresetChipTextActive: {
+    color: "#ffffff",
   },
   gcalGuideBox: {
     backgroundColor: "#f8fafc",
