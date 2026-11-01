@@ -473,11 +473,19 @@ export default function App() {
           <View style={styles.permissionCard}>
             <Text style={styles.permissionTitle}>📅 Takvim Erişimi Gerekli</Text>
             <Text style={styles.permissionText}>
-              iPhone Takviminizdeki etkinlikleri okumak ve alarm kurabilmek için lütfen erişim izni verin.
+              iOS gizlilik kuralları nedeniyle izin penceresi ilk seferden sonra tekrar ekrana gelmez.
+              {"\n\n"}
+              Lütfen aşağıdaki butona basarak iPhone Ayarları'na gidin ve:
+              {"\n"}👉 <Text style={{ fontWeight: "700" }}>Takvimler</Text> seçeneğini <Text style={{ fontWeight: "700" }}>"Tam Erişim"</Text> olarak açın.
             </Text>
             <ActionButton
-              label="Takvim İzni Ver / Yenile"
+              label="⚙️ iPhone Ayarlarını Aç"
+              onPress={() => Linking.openSettings()}
+            />
+            <ActionButton
+              label="↻ İzni Tekrar Kontrol Et / Yenile"
               onPress={loadCalendarEvents}
+              secondary
             />
           </View>
         ) : null}
