@@ -6,8 +6,20 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCalendarsUsageDescription": "Etkinliklerinizden önce alarm kurabilmek için takvim erişimi gereklidir.",
+        "NSRemindersUsageDescription": "Alarmlarınızı senkronize edebilmek için hatırlatıcı izni gereklidir."
+      }
     },
+    "plugins": [
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Etkinliklerinizden önce alarm kurabilmek için takvim erişimi gereklidir."
+        }
+      ]
+    ],
     "android": {
       "package": "com.alertify.app"
     }

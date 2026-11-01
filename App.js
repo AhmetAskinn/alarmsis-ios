@@ -1,6 +1,9 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   Keyboard,
+  Linking,
   Platform,
   Pressable,
   SafeAreaView,
@@ -11,6 +14,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import * as Calendar from "expo-calendar";
 import * as Notifications from "expo-notifications";
 
 const COLORS = {
@@ -22,35 +26,24 @@ const COLORS = {
   greenDark: "#1e624a",
   greenSoft: "#e8f2ed",
   line: "#edf0ed",
+  orange: "#e9975a",
+  red: "#d9534f",
 };
 
 const PRESETS = [5, 10, 15, 30, 60];
-const EVENT_TEMPLATES = {
-  0: [
-    { hour: 9, minute: 30, title: "Lizbon'a uçuş", location: "İstanbul Havalimanı", color: "#e9975a" },
-    { hour: 13, minute: 0, title: "Otel giriş saati", location: "Memmo Alfama · Lizbon", color: "#647dcc" },
-    { hour: 16, minute: 15, title: "Müşteri toplantısı", location: "LX Factory · Lizbon", color: "#bc76ad" },
-  ],
-  1: [
-    { hour: 10, minute: 0, title: "Londra'ya uçuş", location: "Lizbon Havalimanı", color: "#e9975a" },
-    { hour: 11, minute: 45, title: "Şehir turu", location: "South Bank · Londra", color: "#5b9e82" },
-  ],
-  2: [
-    { hour: 8, minute: 30, title: "Dönüş uçuşu", location: "Heathrow Havalimanı · Londra", color: "#e9975a" },
-    { hour: 14, minute: 0, title: "Yaratıcı ekip görüşmesi", location: "Soho House · New York", color: "#bc76ad" },
-  ],
-};
 
+// Bildirim işleyicisi (uygulama açıkken de ses ve banner çalar)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldPlaySound: true,
-    shouldSetBadge: false,
+    shouldSetBadge: true,
     shouldShowBanner: true,
     shouldShowList: true,
   }),
 });
 
 function formatTime(date) {
+  if (!date || !(date instanceof Date) || isNaN(date.getTime())) return "--:--";
   return new Intl.DateTimeFormat("tr-TR", {
     hour: "2-digit",
     minute: "2-digit",
@@ -58,6 +51,7 @@ function formatTime(date) {
 }
 
 function formatLongDate(date) {
+  if (!date || !(date instanceof Date) || isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat("tr-TR", {
     weekday: "long",
     day: "numeric",
@@ -72,26 +66,29 @@ function dateForOffset(offset) {
   return date;
 }
 
-function eventsForDay(offset, leadTimeMinutes) {
-  const date = dateForOffset(offset);
-  const now = new Date();
-
-  return (EVENT_TEMPLATES[offset] ?? [])
-    .map((template, index) => {
-      const startDate = new Date(date);
-      startDate.setHours(template.hour, template.minute, 0, 0);
-
-      return {
-        ...template,
-        id: `${date.toISOString().slice(0, 10)}-${index}`,
-        startDate,
-        alarmDate: new Date(startDate.getTime() - leadTimeMinutes * 60_000),
-      };
-    })
-    .filter((event) => event.startDate > now);
+// Saat (Clock) uygulamasını açma yardımcısı
+async function openAppleClockApp() {
+  const clockUrls = ["clock-alarm://", "clock://"];
+  for (const url of clockUrls) {
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (canOpen) {
+        await Linking.openURL(url);
+        return true;
+      }
+    } catch {
+      // devam et
+    }
+  }
+  // Alternatif olarak Saat'i açamazsa sistem bildirim uyarısı
+  Alert.alert(
+    "Saat Uygulaması",
+    "iPhone Saat uygulamasını açmak için ana ekranınızdaki 'Saat' simgesine dokunun.",
+  );
+  return false;
 }
 
-function ActionButton({ label, onPress, disabled, secondary = false }) {
+function ActionButton({ label, onPress, disabled, secondary = false, icon = null }) {
   return (
     <Pressable
       accessibilityRole="button"
@@ -104,35 +101,63 @@ function ActionButton({ label, onPress, disabled, secondary = false }) {
         pressed && !disabled && styles.pressedButton,
       ]}
     >
-      <Text style={[styles.actionButtonText, secondary && styles.secondaryButtonText]}>
-        {label}
-      </Text>
+      <View style={styles.actionButtonContent}>
+        {icon ? <Text style={styles.actionButtonIcon}>{icon}</Text> : null}
+        <Text style={[styles.actionButtonText, secondary && styles.secondaryButtonText]}>
+          {label}
+        </Text>
+      </View>
     </Pressable>
   );
 }
 
-function EventCard({ event, alarmEnabled, compact = false }) {
+function EventCard({ event, alarmEnabled, compact = false, onSetClockAlarm }) {
   return (
     <View style={styles.eventCard}>
       <View style={styles.eventTime}>
         <Text style={styles.eventTimeText}>
           {compact ? formatTime(event.alarmDate) : formatTime(event.startDate)}
         </Text>
-        <Text style={styles.eventTimeCaption}>{compact ? "alarm" : "yerel saat"}</Text>
+        <Text style={styles.eventTimeCaption}>
+          {compact ? "alarm saati" : "etkinlik saati"}
+        </Text>
       </View>
-      <View style={[styles.eventDivider, { backgroundColor: event.color }]} />
+      <View
+        style={[
+          styles.eventDivider,
+          { backgroundColor: event.color || COLORS.green },
+        ]}
+      />
       <View style={styles.eventInfo}>
         <View style={styles.eventTitleRow}>
-          <Text style={styles.eventTitle}>{event.title}</Text>
+          <Text style={styles.eventTitle} numberOfLines={1}>
+            {event.title}
+          </Text>
           {alarmEnabled ? (
             <Text style={styles.alarmChip}>
-              {compact ? `Etkinlik ${formatTime(event.startDate)}` : formatTime(event.alarmDate)}
+              {compact ? `Etkinlik ${formatTime(event.startDate)}` : `⏰ ${formatTime(event.alarmDate)}`}
             </Text>
           ) : null}
         </View>
-        <Text style={styles.eventLocation}>
-          {compact ? event.location : `${event.location} · örnek etkinlik`}
+        <Text style={styles.eventLocation} numberOfLines={1}>
+          {event.location ? `${event.location} · ` : ""}
+          {event.calendarTitle || "iPhone Takvimi"}
         </Text>
+
+        {onSetClockAlarm ? (
+          <Pressable
+            onPress={() => onSetClockAlarm(event)}
+            style={({ pressed }) => [
+              styles.clockButton,
+              pressed && styles.pressedButton,
+            ]}
+          >
+            <Text style={styles.clockButtonIcon}>⏰</Text>
+            <Text style={styles.clockButtonText}>
+              Saat Uygulamasında Kur ({formatTime(event.alarmDate)})
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
@@ -147,25 +172,117 @@ export default function App() {
   const [alarmsEnabled, setAlarmsEnabled] = useState(false);
   const [scheduledEventIDs, setScheduledEventIDs] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [statusMessage, setStatusMessage] = useState(
-    "Geliştirme önizlemesi: takvimde örnek etkinlikler gösteriliyor.",
-  );
+  const [calendarPermission, setCalendarPermission] = useState("undetermined");
+  const [realEvents, setRealEvents] = useState([]);
+  const [statusMessage, setStatusMessage] = useState("Takvim kontrol ediliyor...");
 
   const days = useMemo(
-    () => Array.from({ length: 5 }, (_, offset) => dateForOffset(offset)),
+    () => Array.from({ length: 7 }, (_, offset) => dateForOffset(offset)),
     [],
   );
-  const selectedEvents = useMemo(
-    () => eventsForDay(selectedDay, alarmMinutes),
-    [selectedDay, alarmMinutes],
-  );
-  const upcomingEvents = useMemo(
-    () =>
-      Array.from({ length: 5 }, (_, offset) => eventsForDay(offset, alarmMinutes))
-        .flat()
-        .sort((first, second) => first.startDate - second.startDate),
-    [alarmMinutes],
-  );
+
+  // İzinleri ve takvim etkinliklerini yükleme
+  const loadCalendarEvents = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const { status } = await Calendar.requestCalendarPermissionsAsync();
+      setCalendarPermission(status);
+
+      if (status !== "granted") {
+        setStatusMessage(
+          "⚠️ iPhone Takvim izni verilmedi. Ayarlar > Expo Go üzerinden Takvim iznini açabilirsiniz.",
+        );
+        setIsLoading(false);
+        return;
+      }
+
+      // Kullanıcının takvimlerini al
+      const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+      const calendarIds = calendars.map((cal) => cal.id);
+
+      if (calendarIds.length === 0) {
+        setRealEvents([]);
+        setStatusMessage("iPhone'da takvim bulunamadı.");
+        setIsLoading(false);
+        return;
+      }
+
+      // Bugünden itibaren 7 günlük etkinlikleri çek
+      const startDate = new Date();
+      startDate.setHours(0, 0, 0, 0);
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + 7);
+      endDate.setHours(23, 59, 59, 999);
+
+      const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
+
+      // Takvim adı ve renk eşleştirmesi
+      const calMap = new Map();
+      calendars.forEach((c) => calMap.set(c.id, { title: c.title, color: c.color }));
+
+      const mappedEvents = events
+        .map((evt) => {
+          const calInfo = calMap.get(evt.calendarId) || {};
+          const sDate = new Date(evt.startDate);
+          const eDate = new Date(evt.endDate);
+          return {
+            id: evt.id,
+            title: evt.title || "İsimsiz Etkinlik",
+            location: evt.location || "",
+            startDate: sDate,
+            endDate: eDate,
+            calendarTitle: calInfo.title || "Apple Takvim",
+            color: calInfo.color || COLORS.green,
+            alarmDate: new Date(sDate.getTime() - alarmMinutes * 60_000),
+          };
+        })
+        .filter((evt) => evt.startDate > new Date())
+        .sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
+
+      setRealEvents(mappedEvents);
+      setStatusMessage(
+        `✓ iPhone Takviminden ${mappedEvents.length} yaklaşan etkinlik yüklendi.`,
+      );
+    } catch (error) {
+      console.warn("Takvim yükleme hatası:", error);
+      setStatusMessage(
+        `Takvim okunamadı: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }, [alarmMinutes]);
+
+  useEffect(() => {
+    loadCalendarEvents();
+  }, [loadCalendarEvents]);
+
+  // Seçilen güne ait etkinlikler
+  const selectedEvents = useMemo(() => {
+    const targetDate = days[selectedDay];
+    if (!targetDate) return [];
+    return realEvents
+      .filter((event) => {
+        const eDate = event.startDate;
+        return (
+          eDate.getDate() === targetDate.getDate() &&
+          eDate.getMonth() === targetDate.getMonth() &&
+          eDate.getFullYear() === targetDate.getFullYear()
+        );
+      })
+      .map((event) => ({
+        ...event,
+        alarmDate: new Date(event.startDate.getTime() - alarmMinutes * 60_000),
+      }));
+  }, [realEvents, selectedDay, days, alarmMinutes]);
+
+  const upcomingEvents = useMemo(() => {
+    return realEvents.map((event) => ({
+      ...event,
+      alarmDate: new Date(event.startDate.getTime() - alarmMinutes * 60_000),
+    }));
+  }, [realEvents, alarmMinutes]);
+
   const nextEvent = upcomingEvents[0];
   const scheduledEvents = upcomingEvents.filter((event) =>
     scheduledEventIDs.includes(event.id),
@@ -176,43 +293,41 @@ export default function App() {
   async function ensureNotificationPermission() {
     if (Platform.OS === "android") {
       await Notifications.setNotificationChannelAsync("default", {
-        name: "Etkinlik alarmları",
+        name: "Etkinlik Alarmları",
         importance: Notifications.AndroidImportance.HIGH,
-        vibrationPattern: [0, 250, 250, 250],
+        sound: "default",
+        vibrationPattern: [0, 500, 250, 500],
       });
     }
 
     const current = await Notifications.getPermissionsAsync();
-    if (current.status === "granted") {
-      return true;
-    }
+    if (current.status === "granted") return true;
 
-    const requested = await Notifications.requestPermissionsAsync();
+    const requested = await Notifications.requestPermissionsAsync({
+      ios: {
+        allowAlert: true,
+        allowBadge: true,
+        allowSound: true,
+      },
+    });
     return requested.status === "granted";
   }
 
-  async function clearSampleNotifications() {
-    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-    const sampleNotifications = scheduled.filter(
-      (notification) => notification.content.data?.alertifySample === true,
-    );
-    await Promise.all(
-      sampleNotifications.map((notification) =>
-        Notifications.cancelScheduledNotificationAsync(notification.identifier),
-      ),
-    );
-  }
-
+  // Tüm etkinlikler için alarm kur
   async function scheduleAlarms(minutes = alarmMinutes) {
     setIsLoading(true);
     try {
       const permissionGranted = await ensureNotificationPermission();
       if (!permissionGranted) {
-        setStatusMessage("Bildirim izni verilmedi. iPhone Ayarları'ndan bildirimleri açabilirsiniz.");
+        setStatusMessage(
+          "Bildirim izni verilmedi. iPhone Ayarları'ndan izin verebilirsiniz.",
+        );
         return false;
       }
 
-      await clearSampleNotifications();
+      // Eski alarmları temizle
+      await Notifications.cancelAllScheduledNotificationsAsync();
+
       const now = Date.now();
       const eligibleEvents = upcomingEvents.filter(
         (event) => event.startDate.getTime() - now >= minutes * 60_000,
@@ -220,32 +335,31 @@ export default function App() {
       const eventsToSchedule = eligibleEvents.slice(0, 64);
 
       for (const event of eventsToSchedule) {
+        const triggerDate = new Date(event.startDate.getTime() - minutes * 60_000);
         await Notifications.scheduleNotificationAsync({
           content: {
-            title: `${minutes} dakika sonra: ${event.title}`,
-            body: `${formatTime(event.startDate)} etkinliği için örnek hatırlatma.`,
+            title: `⏰ ${minutes} dk sonra: ${event.title}`,
+            body: `${formatTime(event.startDate)}'daki etkinliğiniz için alarm.`,
             sound: "default",
-            data: { alertifySample: true, eventId: event.id },
+            data: { eventId: event.id, title: event.title },
           },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
-            date: new Date(event.startDate.getTime() - minutes * 60_000),
+            date: triggerDate,
           },
         });
       }
 
       setAlarmsEnabled(true);
       setScheduledEventIDs(eventsToSchedule.map((event) => event.id));
-      const skippedCount = upcomingEvents.length - eligibleEvents.length;
       setStatusMessage(
-        `${eventsToSchedule.length} örnek etkinlik için yerel bildirim planlandı.${skippedCount > 0 ? ` Alarm zamanı geçmiş veya ${minutes} dakikadan yakın ${skippedCount} etkinlik atlandı.` : ""} Gerçek takvim kullanılmıyor.`,
+        `✓ ${eventsToSchedule.length} etkinlik için ${minutes} dakika öncesine alarmlar kuruldu!`,
       );
       return true;
     } catch (error) {
       setAlarmsEnabled(false);
-      setScheduledEventIDs([]);
       setStatusMessage(
-        `Bildirimler planlanamadı: ${error instanceof Error ? error.message : String(error)}`,
+        `Alarmlar planlanamadı: ${error instanceof Error ? error.message : String(error)}`,
       );
       return false;
     } finally {
@@ -253,6 +367,27 @@ export default function App() {
     }
   }
 
+  // Belirli bir etkinlik için Saat uygulamasında alarm kurma
+  async function handleSetClockAlarm(event) {
+    const alarmTime = new Date(event.startDate.getTime() - alarmMinutes * 60_000);
+    const timeStr = formatTime(alarmTime);
+
+    Alert.alert(
+      "Saat Uygulamasında Alarm Kur",
+      `"${event.title}" etkinliği için alarm saati:\n\n⏰ ${timeStr} (${alarmMinutes} dk önce)\n\nŞimdi Saat uygulaması açılacak.`,
+      [
+        { text: "Vazgeç", style: "cancel" },
+        {
+          text: "Saat Uygulamasını Aç",
+          onPress: async () => {
+            await openAppleClockApp();
+          },
+        },
+      ],
+    );
+  }
+
+  // Test bildirimi (5 saniye sonra)
   async function scheduleTestNotification() {
     setIsLoading(true);
     try {
@@ -264,20 +399,19 @@ export default function App() {
 
       await Notifications.scheduleNotificationAsync({
         content: {
-          title: "Alertify deneme bildirimi",
-          body: "Expo Go üzerinden yerel bildirim başarıyla çalışıyor.",
+          title: "⏰ Alarm Çalıyor: Test Etkinliği",
+          body: `${alarmMinutes} dakika sonra etkinliğiniz başlayacak!`,
           sound: "default",
-          data: { alertifySample: true, test: true },
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
           seconds: 5,
         },
       });
-      setStatusMessage("Deneme bildirimi 5 saniye sonrasına kuruldu.");
+      setStatusMessage("✓ Test alarmı 5 saniye sonrasına kuruldu! Ekranı kilitleyip dinleyin.");
     } catch (error) {
       setStatusMessage(
-        `Deneme bildirimi kurulamadı: ${error instanceof Error ? error.message : String(error)}`,
+        `Test alarmı kurulamadı: ${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
       setIsLoading(false);
@@ -288,7 +422,7 @@ export default function App() {
     Keyboard.dismiss();
     const value = Number(customMinutes);
     if (!Number.isInteger(value) || value < 1 || value > 1_440) {
-      setStatusMessage("Özel süre 1 ile 1440 dakika arasında olmalı.");
+      setStatusMessage("Özel süre 1 ile 1440 dakika arasında olmalıdır.");
       return;
     }
 
@@ -311,22 +445,50 @@ export default function App() {
       <>
         <View style={styles.greeting}>
           <View style={styles.greetingCopy}>
-            <Text style={styles.eyebrow}>{formatLongDate(new Date()).toLocaleUpperCase("tr-TR")}</Text>
-            <Text style={styles.heading}>Günün hazır.</Text>
-            <Text style={styles.mutedText}>Sen planlarına odaklan. Alarmları biz hatırlatırız.</Text>
+            <Text style={styles.eyebrow}>
+              {formatLongDate(new Date()).toLocaleUpperCase("tr-TR")}
+            </Text>
+            <Text style={styles.heading}>iPhone Takvimin</Text>
+            <Text style={styles.mutedText}>
+              Etkinliklerinden {alarmMinutes} dakika önce otomatik alarm çalar.
+            </Text>
           </View>
           <View style={styles.syncPill}>
-            <View style={styles.syncDot} />
-            <Text style={styles.syncText}>Örnek</Text>
+            <View
+              style={[
+                styles.syncDot,
+                {
+                  backgroundColor:
+                    calendarPermission === "granted" ? "#54ad78" : COLORS.orange,
+                },
+              ]}
+            />
+            <Text style={styles.syncText}>
+              {calendarPermission === "granted" ? "Bağlandı" : "İzin Bekleniyor"}
+            </Text>
           </View>
         </View>
 
+        {calendarPermission !== "granted" ? (
+          <View style={styles.permissionCard}>
+            <Text style={styles.permissionTitle}>📅 Takvim Erişimi Gerekli</Text>
+            <Text style={styles.permissionText}>
+              iPhone Takviminizdeki etkinlikleri okumak ve alarm kurabilmek için lütfen erişim izni verin.
+            </Text>
+            <ActionButton
+              label="Takvim İzni Ver / Yenile"
+              onPress={loadCalendarEvents}
+            />
+          </View>
+        ) : null}
+
         <View style={styles.sectionHeading}>
-          <Text style={styles.sectionTitle}>Takvimin</Text>
+          <Text style={styles.sectionTitle}>Tarih Seçimi</Text>
           <Pressable onPress={() => setSelectedDay(0)}>
             <Text style={styles.textButton}>Bugüne dön</Text>
           </Pressable>
         </View>
+
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -350,7 +512,9 @@ export default function App() {
                 onPress={() => setSelectedDay(offset)}
                 style={[styles.dateButton, selected && styles.selectedDateButton]}
               >
-                <Text style={[styles.dateDay, selected && styles.selectedDateText]}>{dayText}</Text>
+                <Text style={[styles.dateDay, selected && styles.selectedDateText]}>
+                  {dayText}
+                </Text>
                 <Text style={[styles.dateNumber, selected && styles.selectedDateText]}>
                   {date.getDate()}
                 </Text>
@@ -362,31 +526,46 @@ export default function App() {
         {nextEvent ? (
           <View style={styles.nextAlarmCard}>
             <View style={styles.nextAlarmIcon}>
-              <Text style={styles.nextAlarmIconText}>◷</Text>
+              <Text style={styles.nextAlarmIconText}>⏰</Text>
             </View>
             <View style={styles.nextAlarmCopy}>
-              <Text style={styles.nextAlarmLabel}>SIRADAKİ ÖRNEK ALARM</Text>
-              <Text style={styles.nextAlarmTime}>{formatTime(nextEvent.alarmDate)}</Text>
-              <Text style={styles.nextAlarmTitle}>{nextEvent.title} için</Text>
+              <Text style={styles.nextAlarmLabel}>SIRADAKİ ALARM SAATİ</Text>
+              <Text style={styles.nextAlarmTime}>
+                {formatTime(nextEvent.alarmDate)}
+              </Text>
+              <Text style={styles.nextAlarmTitle} numberOfLines={1}>
+                "{nextEvent.title}" için ({alarmMinutes} dk önce)
+              </Text>
             </View>
-            <Text style={styles.countdown}>{alarmMinutes} dk önce</Text>
+            <Pressable
+              onPress={() => handleSetClockAlarm(nextEvent)}
+              style={styles.countdownButton}
+            >
+              <Text style={styles.countdown}>Saat'te Kur ›</Text>
+            </Pressable>
           </View>
         ) : null}
 
         <View style={styles.sectionHeading}>
           <View>
-            <Text style={styles.sectionTitle}>Yaklaşan etkinlikler</Text>
+            <Text style={styles.sectionTitle}>
+              {selectedDay === 0 ? "Bugünkü Etkinlikler" : formatLongDate(days[selectedDay])}
+            </Text>
             <Text style={styles.sectionCaption}>
-              {selectedDay === 0 ? "Bugün için planların" : formatLongDate(days[selectedDay])}
+              {selectedEvents.length} etkinlik bulundu
             </Text>
           </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Takvimi yenile"
-            onPress={() => setStatusMessage("Örnek takvim yenilendi.")}
+            onPress={loadCalendarEvents}
             style={styles.refreshButton}
           >
-            <Text style={styles.refreshButtonText}>↻</Text>
+            {isLoading ? (
+              <ActivityIndicator size="small" color={COLORS.green} />
+            ) : (
+              <Text style={styles.refreshButtonText}>↻</Text>
+            )}
           </Pressable>
         </View>
 
@@ -396,26 +575,37 @@ export default function App() {
               key={event.id}
               event={event}
               alarmEnabled={alarmsEnabled && scheduledEventIDs.includes(event.id)}
+              onSetClockAlarm={handleSetClockAlarm}
             />
           ))
         ) : (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>Yaklaşan etkinlik yok</Text>
-            <Text style={styles.mutedText}>Bu gün için örnek etkinlik eklenmemiş.</Text>
+            <Text style={styles.emptyTitle}>Etkinlik Bulunamadı</Text>
+            <Text style={styles.mutedText}>
+              Seçilen tarihte Apple Takviminizde herhangi bir etkinlik görünmüyor.
+            </Text>
           </View>
         )}
 
-        <View style={styles.demoNotice}>
-          <Text style={styles.demoNoticeIcon}>i</Text>
-          <Text style={styles.demoNoticeText}>
-            Expo Go önizlemesi · Gerçek takvim yerine örnek etkinlikler
-          </Text>
+        <View style={{ marginTop: 14 }}>
+          <ActionButton
+            disabled={isLoading || upcomingEvents.length === 0}
+            icon="🔔"
+            label={
+              isLoading
+                ? "Alarmlar kuruluyor..."
+                : `Tüm Etkinliklere Alarm Kur (${alarmMinutes} dk önce)`
+            }
+            onPress={() => scheduleAlarms()}
+          />
+
+          <ActionButton
+            icon="⏰"
+            label="iPhone Saat Uygulamasını Aç"
+            onPress={openAppleClockApp}
+            secondary
+          />
         </View>
-        <ActionButton
-          disabled={isLoading}
-          label={isLoading ? "Bildirimler hazırlanıyor..." : "Örnek alarmları etkinleştir"}
-          onPress={() => scheduleAlarms()}
-        />
       </>
     );
   }
@@ -424,30 +614,37 @@ export default function App() {
     return (
       <>
         <View style={styles.pageHeading}>
-          <Text style={styles.heading}>Kurulu alarmlar</Text>
-          <Text style={styles.mutedText}>Seçtiğin süreye göre otomatik</Text>
+          <Text style={styles.heading}>Kurulu Alarmlar</Text>
+          <Text style={styles.mutedText}>
+            iPhone Takviminize göre belirlenen alarmlar
+          </Text>
         </View>
         {scheduledEvents.length > 0 ? (
           scheduledEvents.map((event, index) => (
             <View key={event.id}>
               {index === 0 ||
-              scheduledEvents[index - 1].startDate.toDateString() !== event.startDate.toDateString() ? (
-                <Text style={styles.alarmDateHeading}>{formatLongDate(event.startDate)}</Text>
+              scheduledEvents[index - 1].startDate.toDateString() !==
+                event.startDate.toDateString() ? (
+                <Text style={styles.alarmDateHeading}>
+                  {formatLongDate(event.startDate)}
+                </Text>
               ) : null}
-              <EventCard event={event} alarmEnabled compact />
+              <EventCard
+                event={event}
+                alarmEnabled
+                compact
+                onSetClockAlarm={handleSetClockAlarm}
+              />
             </View>
           ))
         ) : (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>Yaklaşan alarm yok</Text>
-            <Text style={styles.mutedText}>Takvim sekmesinden örnek alarmları etkinleştir.</Text>
+            <Text style={styles.emptyTitle}>Aktif alarm bulunmuyor</Text>
+            <Text style={styles.mutedText}>
+              Takvim sekmesinden "Tüm Etkinliklere Alarm Kur" butonuna basarak alarmları başlatabilirsiniz.
+            </Text>
           </View>
         )}
-        <Text style={styles.smallNote}>
-          {alarmsEnabled
-            ? "Örnek etkinlikler için yerel bildirimler planlandı."
-            : "Bildirimleri planlamak için Takvim sekmesinden örnek alarmları etkinleştir."}
-        </Text>
       </>
     );
   }
@@ -457,12 +654,15 @@ export default function App() {
       <>
         <View style={styles.pageHeading}>
           <Text style={styles.heading}>Ayarlar</Text>
-          <Text style={styles.mutedText}>Alertify geliştirme önizlemesi</Text>
+          <Text style={styles.mutedText}>Alarm zamanlaması ve Saat entegrasyonu</Text>
         </View>
+
         <View style={styles.settingsCard}>
-          <Text style={styles.settingsTitle}>Otomatik alarm zamanı</Text>
-          <Text style={styles.mutedText}>Etkinlik başlamadan ne kadar önce hatırlatsın?</Text>
-          <Text style={styles.inputLabel}>Etkinlikten önce</Text>
+          <Text style={styles.settingsTitle}>⏰ Kaç Dakika Önce Çalsın?</Text>
+          <Text style={styles.mutedText}>
+            Etkinliğin başlamasına kaç dakika kala alarm çalacağını seçin:
+          </Text>
+
           <View style={styles.presetList}>
             {PRESETS.map((value) => (
               <Pressable
@@ -470,7 +670,10 @@ export default function App() {
                 accessibilityState={{ selected: selectedPreset === value }}
                 key={value}
                 onPress={() => choosePreset(value)}
-                style={[styles.presetButton, selectedPreset === value && styles.selectedPreset]}
+                style={[
+                  styles.presetButton,
+                  selectedPreset === value && styles.selectedPreset,
+                ]}
               >
                 <Text
                   style={[
@@ -486,13 +689,22 @@ export default function App() {
               accessibilityRole="button"
               accessibilityState={{ selected: selectedPreset === null }}
               onPress={() => setIsCustomAlarmTime(true)}
-              style={[styles.presetButton, selectedPreset === null && styles.selectedPreset]}
+              style={[
+                styles.presetButton,
+                selectedPreset === null && styles.selectedPreset,
+              ]}
             >
-              <Text style={[styles.presetText, selectedPreset === null && styles.selectedPresetText]}>
+              <Text
+                style={[
+                  styles.presetText,
+                  selectedPreset === null && styles.selectedPresetText,
+                ]}
+              >
                 Özel
               </Text>
             </Pressable>
           </View>
+
           {selectedPreset === null ? (
             <View style={styles.customInputRow}>
               <TextInput
@@ -506,27 +718,36 @@ export default function App() {
               <Text style={styles.mutedText}>dakika önce (1–1440)</Text>
             </View>
           ) : null}
-          <ActionButton label="Alarm süresini kaydet" onPress={saveAlarmTime} />
+
+          <ActionButton label="Seçimi Kaydet" onPress={saveAlarmTime} />
         </View>
 
         <View style={styles.settingsCard}>
-          <Text style={styles.settingsTitle}>Bildirimleri dene</Text>
+          <Text style={styles.settingsTitle}>🧪 Test Alarmı</Text>
           <Text style={styles.mutedText}>
-            iPhone’da bildirim iznini isteyip 5 saniye sonra bir test bildirimi gösterir.
+            iPhone'unuzda sesli alarm ve bildirimin nasıl çaldığını 5 saniye içinde test edin.
           </Text>
           <ActionButton
             disabled={isLoading}
-            label={isLoading ? "Hazırlanıyor..." : "5 saniyelik deneme bildirimi"}
+            label={isLoading ? "Hazırlanıyor..." : "5 Saniye Sonra Çaldır"}
             onPress={scheduleTestNotification}
             secondary
           />
         </View>
 
-        <View style={styles.demoNotice}>
-          <Text style={styles.demoNoticeIcon}>i</Text>
-          <Text style={styles.demoNoticeText}>
-            Bu sürüm örnek takvim kullanır. Gerçek iPhone takvimi erişimi Expo Go’da desteklenmez.
+        <View style={styles.settingsCard}>
+          <Text style={styles.settingsTitle}>📱 iPhone Saat (Clock) Entegrasyonu</Text>
+          <Text style={styles.mutedText}>
+            Apple gizlilik ilkeleri nedeniyle üçüncü parti uygulamaların Saat uygulamasının içerisine doğrudan gizlice alarm yazmasına izin vermez. Bu yüzden Alertify:
+            {"\n"}• Belirlenen dakikada yüksek sesli yerel alarm çalar.
+            {"\n"}• İsterseniz "Saat'te Kur" butonuna basarak Saat uygulamasında doğrudan alarm açmanızı sağlar.
           </Text>
+          <ActionButton
+            icon="⏰"
+            label="Saat Uygulamasına Git"
+            onPress={openAppleClockApp}
+            secondary
+          />
         </View>
       </>
     );
@@ -539,11 +760,13 @@ export default function App() {
         <View style={styles.topBar}>
           <View style={styles.brand}>
             <View style={styles.brandMark}>
-              <Text style={styles.brandMarkText}>◷</Text>
+              <Text style={styles.brandMarkText}>⏰</Text>
             </View>
-            <Text style={styles.brandText}>alertify</Text>
+            <Text style={styles.brandText}>Alertify</Text>
           </View>
-          <Text style={styles.previewBadge}>ÖNİZLEME</Text>
+          <Text style={styles.previewBadge}>
+            {calendarPermission === "granted" ? "iCloud Takvim" : "Bağlantısız"}
+          </Text>
         </View>
 
         <ScrollView
@@ -554,6 +777,7 @@ export default function App() {
           {selectedTab === "calendar" ? renderCalendar() : null}
           {selectedTab === "alarms" ? renderAlarms() : null}
           {selectedTab === "settings" ? renderSettings() : null}
+
           {statusMessage ? (
             <Text accessibilityLiveRegion="polite" style={styles.statusMessage}>
               {statusMessage}
@@ -563,9 +787,9 @@ export default function App() {
 
         <View style={styles.tabBar}>
           {[
-            { id: "calendar", label: "Takvim", icon: "▦" },
-            { id: "alarms", label: "Alarmlar", icon: "◷" },
-            { id: "settings", label: "Ayarlar", icon: "⚙" },
+            { id: "calendar", label: "Takvim", icon: "📅" },
+            { id: "alarms", label: "Alarmlar", icon: "⏰" },
+            { id: "settings", label: "Ayarlar", icon: "⚙️" },
           ].map((tab) => {
             const selected = selectedTab === tab.id;
             return (
@@ -576,8 +800,12 @@ export default function App() {
                 onPress={() => setSelectedTab(tab.id)}
                 style={styles.tabItem}
               >
-                <Text style={[styles.tabIcon, selected && styles.activeTabText]}>{tab.icon}</Text>
-                <Text style={[styles.tabLabel, selected && styles.activeTabText]}>{tab.label}</Text>
+                <Text style={[styles.tabIcon, selected && styles.activeTabText]}>
+                  {tab.icon}
+                </Text>
+                <Text style={[styles.tabLabel, selected && styles.activeTabText]}>
+                  {tab.label}
+                </Text>
               </Pressable>
             );
           })}
@@ -596,13 +824,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   pageContent: {
-    paddingHorizontal: 22,
-    paddingTop: 16,
+    paddingHorizontal: 20,
+    paddingTop: 12,
     paddingBottom: 26,
   },
   topBar: {
-    minHeight: 54,
-    paddingHorizontal: 22,
+    minHeight: 50,
+    paddingHorizontal: 20,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -610,65 +838,62 @@ const styles = StyleSheet.create({
   brand: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    gap: 8,
   },
   brandMark: {
-    width: 35,
-    height: 35,
-    borderRadius: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     backgroundColor: COLORS.green,
     alignItems: "center",
     justifyContent: "center",
   },
   brandMarkText: {
-    color: COLORS.surface,
-    fontSize: 24,
-    lineHeight: 27,
+    fontSize: 18,
   },
   brandText: {
     color: COLORS.greenDark,
-    fontSize: 22,
+    fontSize: 21,
     fontWeight: "800",
-    letterSpacing: -1,
+    letterSpacing: -0.5,
   },
   previewBadge: {
     color: COLORS.greenDark,
     backgroundColor: COLORS.greenSoft,
-    borderRadius: 20,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.6,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    fontSize: 11,
+    fontWeight: "700",
   },
   greeting: {
     flexDirection: "row",
     alignItems: "flex-end",
     justifyContent: "space-between",
     gap: 8,
-    marginTop: 20,
-    marginBottom: 30,
+    marginTop: 14,
+    marginBottom: 20,
   },
   greetingCopy: {
     flex: 1,
   },
   eyebrow: {
     color: COLORS.muted,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "700",
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   heading: {
     color: COLORS.ink,
-    fontSize: 26,
+    fontSize: 25,
     fontWeight: "800",
-    letterSpacing: -0.8,
-    marginTop: 5,
+    letterSpacing: -0.6,
+    marginTop: 3,
   },
   mutedText: {
     color: COLORS.muted,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 18,
     marginTop: 4,
   },
   syncPill: {
@@ -678,36 +903,54 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: COLORS.surface,
     paddingHorizontal: 9,
-    paddingVertical: 7,
-    marginBottom: 4,
+    paddingVertical: 6,
   },
   syncDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: "#54ad78",
   },
   syncText: {
     color: COLORS.greenDark,
     fontSize: 10,
     fontWeight: "700",
   },
+  permissionCard: {
+    backgroundColor: "#fff9ea",
+    borderWidth: 1,
+    borderColor: "#ffe39f",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+  },
+  permissionTitle: {
+    color: "#8a5800",
+    fontSize: 15,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  permissionText: {
+    color: "#6b4a0c",
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 10,
+  },
   sectionHeading: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 12,
+    marginBottom: 10,
     marginTop: 8,
   },
   sectionTitle: {
     color: COLORS.ink,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "700",
   },
   sectionCaption: {
     color: COLORS.muted,
-    fontSize: 12,
-    marginTop: 3,
+    fontSize: 11,
+    marginTop: 2,
   },
   textButton: {
     color: COLORS.green,
@@ -715,13 +958,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   dateStrip: {
-    gap: 9,
-    paddingBottom: 19,
+    gap: 8,
+    paddingBottom: 16,
   },
   dateButton: {
-    width: 61,
-    height: 68,
-    borderRadius: 18,
+    width: 60,
+    height: 66,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: COLORS.surface,
@@ -736,35 +979,33 @@ const styles = StyleSheet.create({
   },
   dateNumber: {
     color: COLORS.ink,
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: "800",
-    marginTop: 3,
+    marginTop: 2,
   },
   selectedDateText: {
     color: COLORS.surface,
   },
   nextAlarmCard: {
-    minHeight: 112,
+    minHeight: 100,
     backgroundColor: COLORS.greenDark,
-    borderRadius: 23,
-    padding: 17,
+    borderRadius: 20,
+    padding: 15,
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 25,
-    overflow: "hidden",
+    marginBottom: 20,
   },
   nextAlarmIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 15,
+    width: 40,
+    height: 40,
+    borderRadius: 13,
     backgroundColor: "rgba(255,255,255,0.15)",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 12,
+    marginRight: 11,
   },
   nextAlarmIconText: {
-    color: COLORS.surface,
-    fontSize: 26,
+    fontSize: 20,
   },
   nextAlarmCopy: {
     flex: 1,
@@ -777,54 +1018,55 @@ const styles = StyleSheet.create({
   },
   nextAlarmTime: {
     color: COLORS.surface,
-    fontSize: 27,
+    fontSize: 24,
     fontWeight: "800",
-    marginTop: 3,
+    marginTop: 2,
   },
   nextAlarmTitle: {
     color: "#d8e9df",
     fontSize: 11,
     marginTop: 1,
   },
+  countdownButton: {
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderRadius: 16,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+  },
   countdown: {
     color: COLORS.surface,
-    backgroundColor: "rgba(255,255,255,0.14)",
-    borderRadius: 20,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "700",
-    overflow: "hidden",
   },
   refreshButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: COLORS.surface,
   },
   refreshButtonText: {
     color: COLORS.green,
-    fontSize: 25,
+    fontSize: 22,
   },
   eventCard: {
     flexDirection: "row",
-    alignItems: "center",
-    minHeight: 86,
+    alignItems: "flex-start",
     backgroundColor: COLORS.surface,
-    borderRadius: 19,
+    borderRadius: 17,
     padding: 13,
-    marginBottom: 10,
-    shadowColor: "#223e30",
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 5 },
+    marginBottom: 9,
+    shadowColor: "#000",
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
     elevation: 1,
   },
   eventTime: {
-    width: 59,
+    width: 58,
     alignItems: "flex-start",
+    paddingTop: 2,
   },
   eventTimeText: {
     color: COLORS.ink,
@@ -834,13 +1076,14 @@ const styles = StyleSheet.create({
   eventTimeCaption: {
     color: COLORS.muted,
     fontSize: 9,
-    marginTop: 3,
+    marginTop: 2,
   },
   eventDivider: {
     width: 3,
-    height: 47,
+    height: "100%",
+    minHeight: 48,
     borderRadius: 2,
-    marginRight: 12,
+    marginRight: 11,
   },
   eventInfo: {
     flex: 1,
@@ -849,63 +1092,66 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 5,
+    gap: 4,
   },
   eventTitle: {
     color: COLORS.ink,
     flex: 1,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "700",
   },
   alarmChip: {
     color: COLORS.greenDark,
     backgroundColor: COLORS.greenSoft,
-    borderRadius: 11,
-    paddingHorizontal: 7,
-    paddingVertical: 4,
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
     fontSize: 9,
     fontWeight: "700",
-    overflow: "hidden",
   },
   eventLocation: {
     color: COLORS.muted,
-    fontSize: 10,
-    marginTop: 6,
+    fontSize: 11,
+    marginTop: 3,
   },
-  demoNotice: {
+  clockButton: {
+    marginTop: 8,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
-    marginTop: 12,
-    marginBottom: 15,
+    gap: 5,
+    backgroundColor: "#fff6eb",
+    borderWidth: 1,
+    borderColor: "#ffe0b2",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    alignSelf: "flex-start",
   },
-  demoNoticeIcon: {
-    color: COLORS.green,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: COLORS.greenSoft,
-    textAlign: "center",
-    textAlignVertical: "center",
+  clockButtonIcon: {
     fontSize: 12,
-    fontWeight: "800",
-    overflow: "hidden",
   },
-  demoNoticeText: {
-    flex: 1,
-    color: COLORS.muted,
+  clockButtonText: {
+    color: "#b25e00",
     fontSize: 11,
-    lineHeight: 16,
+    fontWeight: "700",
   },
   actionButton: {
-    minHeight: 48,
+    minHeight: 46,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 15,
+    borderRadius: 14,
     backgroundColor: COLORS.green,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 11,
     marginTop: 8,
+  },
+  actionButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  actionButtonIcon: {
+    fontSize: 15,
   },
   actionButtonText: {
     color: COLORS.surface,
@@ -923,67 +1169,55 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   pressedButton: {
-    opacity: 0.8,
+    opacity: 0.75,
   },
   emptyCard: {
-    borderRadius: 19,
-    padding: 20,
+    borderRadius: 16,
+    padding: 18,
     backgroundColor: COLORS.surface,
     marginTop: 4,
   },
   emptyTitle: {
     color: COLORS.ink,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "700",
   },
   pageHeading: {
-    marginTop: 22,
-    marginBottom: 22,
+    marginTop: 18,
+    marginBottom: 18,
   },
   alarmDateHeading: {
     color: COLORS.greenDark,
     fontSize: 12,
     fontWeight: "700",
-    marginTop: 12,
-    marginBottom: 8,
+    marginTop: 10,
+    marginBottom: 6,
     textTransform: "capitalize",
-  },
-  smallNote: {
-    color: COLORS.muted,
-    fontSize: 11,
-    lineHeight: 17,
-    marginTop: 12,
   },
   settingsCard: {
     backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 17,
-    marginBottom: 15,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
   },
   settingsTitle: {
     color: COLORS.ink,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
     marginBottom: 3,
-  },
-  inputLabel: {
-    color: COLORS.ink,
-    fontSize: 12,
-    fontWeight: "700",
-    marginTop: 20,
-    marginBottom: 9,
   },
   presetList: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+    marginTop: 12,
   },
   presetButton: {
-    borderRadius: 13,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.line,
     paddingHorizontal: 12,
-    paddingVertical: 9,
+    paddingVertical: 8,
   },
   selectedPreset: {
     borderColor: COLORS.green,
@@ -1001,17 +1235,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    marginTop: 14,
+    marginTop: 12,
   },
   customInput: {
-    width: 80,
-    height: 43,
+    width: 76,
+    height: 40,
     borderWidth: 1,
     borderColor: COLORS.line,
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    borderRadius: 11,
+    paddingHorizontal: 10,
     color: COLORS.ink,
-    fontSize: 15,
+    fontSize: 14,
   },
   statusMessage: {
     color: COLORS.muted,
@@ -1022,7 +1256,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
   },
   tabBar: {
-    minHeight: 67,
+    minHeight: 64,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-around",
@@ -1032,16 +1266,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   tabItem: {
-    minWidth: 76,
+    minWidth: 70,
     alignItems: "center",
     justifyContent: "center",
-    gap: 3,
-    paddingVertical: 7,
+    gap: 2,
+    paddingVertical: 6,
   },
   tabIcon: {
-    color: COLORS.muted,
-    fontSize: 19,
-    height: 23,
+    fontSize: 18,
+    height: 22,
   },
   tabLabel: {
     color: COLORS.muted,
