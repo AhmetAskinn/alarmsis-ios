@@ -14,10 +14,10 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  Vibration,
   View,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Audio } from "expo-av";
 import * as Calendar from "expo-calendar";
 import * as Notifications from "expo-notifications";
 
@@ -38,10 +38,6 @@ const COLORS = {
 
 const PRESETS = [5, 10, 15, 30, 60];
 const STORAGE_KEY_GCAL_URL = "@alertify_gcal_url";
-
-// Kesintisiz yüksek sesli alarm melodisi
-const ALARM_SOUND_URL =
-  "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -377,7 +373,6 @@ export default function App() {
 
   // Canlı Sesli Alarm Modalı State'leri
   const [activeAlarmEvent, setActiveAlarmEvent] = useState(null);
-  const soundRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   // Yeni etkinlik ekleme modalı
@@ -392,24 +387,7 @@ export default function App() {
     [],
   );
 
-  // Ses sistemini (Audio Mode) yapılandır
-  useEffect(() => {
-    async function setupAudio() {
-      try {
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: true,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
-        });
-      } catch (err) {
-        console.warn("Ses modu hatası:", err);
-      }
-    }
-    setupAudio();
-  }, []);
-
-  // Animasyon döngüsü
+  // Animasyon döngüsü (Alarm çalarken ikonun yanıp sönmesi)
   useEffect(() => {
     if (activeAlarmEvent) {
       Animated.loop(
@@ -431,41 +409,31 @@ export default function App() {
     }
   }, [activeAlarmEvent, pulseAnim]);
 
-  // Sesli alarmı durdurma
+  // Sesli alarmı ve titreşimi durdurma
   const stopAlarmSound = useCallback(async () => {
-    try {
-      if (soundRef.current) {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-      }
-    } catch (err) {
-      console.warn("Ses durdurma hatası:", err);
-    }
+    Vibration.cancel();
     setActiveAlarmEvent(null);
   }, []);
 
-  // Kesintisiz yüksek sesli alarmı başlatma
+  // Kesintisiz alarmı ve titreşimi başlatma
   const startAlarmSound = useCallback(async (event) => {
     try {
-      if (soundRef.current) {
-        try {
-          await soundRef.current.stopAsync();
-          await soundRef.current.unloadAsync();
-        } catch {
-          // yok say
-        }
-      }
+      // Sürekli titreşim döngüsü (Durdurulana kadar susmaz)
+      Vibration.vibrate([1000, 500, 1000, 500], true);
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: ALARM_SOUND_URL },
-        { shouldPlay: true, isLooping: true, volume: 1.0 },
-      );
-      soundRef.current = sound;
-      setActiveAlarmEvent(event);
+      // Anlık sesli uyarı çal
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `⏰ ALARM ÇALIYOR: ${event.title}`,
+          body: `Toplantı saati geldi! Susturmak için dokunun.`,
+          sound: "default",
+        },
+        trigger: null,
+      });
     } catch (err) {
-      setActiveAlarmEvent(event);
+      console.warn("Alarm bildirim hatası:", err);
     }
+    setActiveAlarmEvent(event);
   }, []);
 
   // 10 dakika erteleme
