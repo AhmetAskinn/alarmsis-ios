@@ -199,35 +199,34 @@ async function openAppleClockApp() {
   return false;
 }
 
-// Apple Kestirmeler (Shortcuts) tetikleyici
+// Apple Saat uygulamasında alarm kurma yardımcısı
 async function triggerShortcutAlarm(timeStr, eventTitle) {
-  const shortcutUrl = `shortcuts://run-shortcut?name=AlarmKur&input=${encodeURIComponent(
-    timeStr,
-  )}`;
-  try {
-    const canOpen = await Linking.canOpenURL(shortcutUrl);
-    if (canOpen) {
-      await Linking.openURL(shortcutUrl);
-      return true;
-    }
-  } catch {
-    // Kestirme henüz oluşturulmamışsa
-  }
-
   Alert.alert(
-    "⏰ Saat Uygulamasında Kur",
-    `"${eventTitle}" için alarm saati:\n\n👉 ${timeStr}\n\nSaat uygulaması açılıyor.`,
+    `⏰ Alarm Saati: ${timeStr}`,
+    `"${eventTitle}" için etkinlikten önce alarm saati hesaplandı.\n\nNasıl kurmak istersiniz?`,
     [
       { text: "Vazgeç", style: "cancel" },
       {
-        text: "Saat'i Aç",
+        text: "⏰ Saat Uygulamasını Aç",
         onPress: async () => {
           await openAppleClockApp();
         },
       },
+      {
+        text: "⚡ Kestirmeyle Kur",
+        onPress: async () => {
+          const shortcutUrl = `shortcuts://run-shortcut?name=AlarmKur&input=${encodeURIComponent(
+            timeStr,
+          )}`;
+          try {
+            await Linking.openURL(shortcutUrl);
+          } catch {
+            await openAppleClockApp();
+          }
+        },
+      },
     ],
   );
-  return false;
 }
 
 function getSmartEvents(alarmMinutes) {
