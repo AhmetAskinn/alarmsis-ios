@@ -17,9 +17,20 @@ import {
   Vibration,
   View,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Calendar from "expo-calendar";
 import * as Notifications from "expo-notifications";
+
+// Expo Go için güvenli, çökmeyen bellek deposu
+let MEMORY_GCAL_URL = "";
+const SafeStorage = {
+  getItem: async () => MEMORY_GCAL_URL,
+  setItem: async (key, val) => {
+    MEMORY_GCAL_URL = val;
+  },
+  removeItem: async () => {
+    MEMORY_GCAL_URL = "";
+  },
+};
 
 const COLORS = {
   background: "#f6f7f4",
@@ -483,7 +494,7 @@ export default function App() {
     let combinedEvents = [];
 
     // 1. Kayıtlı Google Takvim linki varsa çek
-    const savedUrl = await AsyncStorage.getItem(STORAGE_KEY_GCAL_URL);
+    const savedUrl = await SafeStorage.getItem(STORAGE_KEY_GCAL_URL);
     if (savedUrl) {
       setSavedGcalUrl(savedUrl);
       try {
@@ -571,7 +582,7 @@ export default function App() {
     setIsLoading(true);
     try {
       const gEvents = await fetchGoogleCalendarEvents(gcalUrlInput.trim());
-      await AsyncStorage.setItem(STORAGE_KEY_GCAL_URL, gcalUrlInput.trim());
+      await SafeStorage.setItem(STORAGE_KEY_GCAL_URL, gcalUrlInput.trim());
       setSavedGcalUrl(gcalUrlInput.trim());
       setGcalModalVisible(false);
 
@@ -598,7 +609,7 @@ export default function App() {
 
   // Google Takvim Bağlantısını Kaldır
   async function handleRemoveGcal() {
-    await AsyncStorage.removeItem(STORAGE_KEY_GCAL_URL);
+    await SafeStorage.removeItem(STORAGE_KEY_GCAL_URL);
     setSavedGcalUrl("");
     setGcalUrlInput("");
     setGcalModalVisible(false);
