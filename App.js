@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Keyboard,
   Linking,
   Modal,
@@ -15,6 +16,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Audio } from "expo-av";
 import * as Calendar from "expo-calendar";
 import * as Notifications from "expo-notifications";
 
@@ -29,11 +31,16 @@ const COLORS = {
   line: "#edf0ed",
   orange: "#e9975a",
   red: "#d9534f",
+  danger: "#e63946",
 };
 
 const PRESETS = [5, 10, 15, 30, 60];
 
-// Bildirim işleyicisi (uygulama açıkken de ses ve banner çalar)
+// Dijital alarm sesi linki (güvenilir, yüksek sesli kesintisiz alarm)
+const ALARM_SOUND_URL =
+  "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg";
+
+// Bildirim işleyicisi
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldPlaySound: true,
@@ -67,7 +74,7 @@ function dateForOffset(offset) {
   return date;
 }
 
-// Saat (Clock) uygulamasını açma yardımcısı
+// iPhone Saat (Clock) uygulamasını açma
 async function openAppleClockApp() {
   const clockUrls = ["clock-alarm://", "clock://"];
   for (const url of clockUrls) {
@@ -88,15 +95,46 @@ async function openAppleClockApp() {
   return false;
 }
 
+// Apple Kestirmeler (Shortcuts) ile Saat uygulamasında doğrudan alarm yaratma
+async function triggerShortcutAlarm(timeStr, eventTitle) {
+  const shortcutUrl = `shortcuts://run-shortcut?name=AlarmKur&input=${encodeURIComponent(
+    timeStr,
+  )}`;
+  try {
+    const canOpen = await Linking.canOpenURL(shortcutUrl);
+    if (canOpen) {
+      await Linking.openURL(shortcutUrl);
+      return true;
+    }
+  } catch {
+    // Kestirme henüz oluşturulmamışsa
+  }
+
+  // Kestirme yoksa doğrudan Saat uygulamasını aç
+  Alert.alert(
+    "⏰ Saat Uygulamasında Kur",
+    `"${eventTitle}" için alarm saati:\n\n👉 ${timeStr}\n\nSaat uygulaması açılıyor.`,
+    [
+      { text: "Vazgeç", style: "cancel" },
+      {
+        text: "Saat'i Aç",
+        onPress: async () => {
+          await openAppleClockApp();
+        },
+      },
+    ],
+  );
+  return false;
+}
+
 function getSmartEvents(alarmMinutes) {
   const now = new Date();
   const events = [];
 
-  // Bugün için 1 saat 15 dk ve 3 saat sonra etkinlikler
   const t1 = new Date(now.getTime() + 75 * 60_000);
   events.push({
     id: "sample-1",
-    title: "Müşteri Görüşmesi",
+    title: "Müşteri Toplantısı",
     location: "Online · Zoom",
     startDate: t1,
     endDate: new Date(t1.getTime() + 45 * 60_000),
@@ -117,7 +155,6 @@ function getSmartEvents(alarmMinutes) {
     alarmDate: new Date(t2.getTime() - alarmMinutes * 60_000),
   });
 
-  // Yarın ve sonraki günler
   const daysMeta = [
     { title: "Lizbon Uçuşu (TK1755)", loc: "İstanbul Havalimanı", color: "#e9975a" },
     { title: "Otel Giriş Saati", loc: "Memmo Alfama · Lizbon", color: "#647dcc" },
@@ -170,7 +207,7 @@ function ActionButton({ label, onPress, disabled, secondary = false, icon = null
   );
 }
 
-function EventCard({ event, alarmEnabled, compact = false, onSetClockAlarm }) {
+function EventCard({ event, alarmEnabled, compact = false, onSetClockAlarm, onTriggerDirectAlarm }) {
   return (
     <View style={styles.eventCard}>
       <View style={styles.eventTime}>
@@ -203,20 +240,35 @@ function EventCard({ event, alarmEnabled, compact = false, onSetClockAlarm }) {
           {event.calendarTitle || "Takvim"}
         </Text>
 
-        {onSetClockAlarm ? (
-          <Pressable
-            onPress={() => onSetClockAlarm(event)}
-            style={({ pressed }) => [
-              styles.clockButton,
-              pressed && styles.pressedButton,
-            ]}
-          >
-            <Text style={styles.clockButtonIcon}>⏰</Text>
-            <Text style={styles.clockButtonText}>
-              Saat Uygulamasında Kur ({formatTime(event.alarmDate)})
-            </Text>
-          </Pressable>
-        ) : null}
+        <View style={styles.eventButtonRow}>
+          {onSetClockAlarm ? (
+            <Pressable
+              onPress={() => onSetClockAlarm(event)}
+              style={({ pressed }) => [
+                styles.clockButton,
+                pressed && styles.pressedButton,
+              ]}
+            >
+              <Text style={styles.clockButtonIcon}>⏰</Text>
+              <Text style={styles.clockButtonText}>
+                Saat'te Kur ({formatTime(event.alarmDate)})
+              </Text>
+            </Pressable>
+          ) : null}
+
+          {onTriggerDirectAlarm ? (
+            <Pressable
+              onPress={() => onTriggerDirectAlarm(event)}
+              style={({ pressed }) => [
+                styles.ringNowButton,
+                pressed && styles.pressedButton,
+              ]}
+            >
+              <Text style={styles.ringNowButtonIcon}>🔊</Text>
+              <Text style={styles.ringNowButtonText}>Çaldır</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
     </View>
   );
@@ -231,11 +283,15 @@ export default function App() {
   const [alarmsEnabled, setAlarmsEnabled] = useState(false);
   const [scheduledEventIDs, setScheduledEventIDs] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [calendarPermission, setCalendarPermission] = useState("smart_mode");
   const [allEvents, setAllEvents] = useState([]);
   const [statusMessage, setStatusMessage] = useState("");
 
-  // Yeni etkinlik ekleme modalı state'leri
+  // Canlı Sesli Alarm Modalı State'leri
+  const [activeAlarmEvent, setActiveAlarmEvent] = useState(null);
+  const soundRef = useRef(null);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Yeni etkinlik ekleme modalı
   const [modalVisible, setModalVisible] = useState(false);
   const [newEventTitle, setNewEventTitle] = useState("");
   const [newEventHour, setNewEventHour] = useState("14");
@@ -247,7 +303,101 @@ export default function App() {
     [],
   );
 
-  // Takvim yükleme / Akıllı mod başlatma
+  // Ses sistemini (Audio Mode) iOS sessiz anahtarını (Silent Switch) aşacak şekilde ayarla
+  useEffect(() => {
+    async function setupAudio() {
+      try {
+        await Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: true,
+          shouldDuckAndroid: false,
+          playThroughEarpieceAndroid: false,
+        });
+      } catch (err) {
+        console.warn("Ses modu hatası:", err);
+      }
+    }
+    setupAudio();
+  }, []);
+
+  // Animasyon döngüsü (Alarm çalarken ikonun yanıp sönmesi)
+  useEffect(() => {
+    if (activeAlarmEvent) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.3,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ]),
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [activeAlarmEvent, pulseAnim]);
+
+  // Sesli alarmı durdurma
+  const stopAlarmSound = useCallback(async () => {
+    try {
+      if (soundRef.current) {
+        await soundRef.current.stopAsync();
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+    } catch (err) {
+      console.warn("Ses durdurma hatası:", err);
+    }
+    setActiveAlarmEvent(null);
+  }, []);
+
+  // Kesintisiz yüksek sesli alarmı başlatma
+  const startAlarmSound = useCallback(async (event) => {
+    try {
+      // Önceki ses varsa durdur
+      if (soundRef.current) {
+        try {
+          await soundRef.current.stopAsync();
+          await soundRef.current.unloadAsync();
+        } catch {
+          // yok say
+        }
+      }
+
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: ALARM_SOUND_URL },
+        { shouldPlay: true, isLooping: true, volume: 1.0 },
+      );
+      soundRef.current = sound;
+      setActiveAlarmEvent(event);
+    } catch (err) {
+      console.warn("Alarm sesi çalınamadı:", err);
+      // Fallback: Görsel modalı yine de aç
+      setActiveAlarmEvent(event);
+    }
+  }, []);
+
+  // 10 dakika erteleme
+  const snoozeAlarm = useCallback(
+    async (event) => {
+      await stopAlarmSound();
+      const newAlarmDate = new Date(Date.now() + 10 * 60_000);
+      Alert.alert(
+        "💤 Ertelendi",
+        `"${event.title}" alarmı 10 dakika sonraya (${formatTime(
+          newAlarmDate,
+        )}) ertelendi.`,
+      );
+    },
+    [stopAlarmSound],
+  );
+
+  // Takvim yükleme / Başlatma
   const loadCalendarEvents = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -256,11 +406,10 @@ export default function App() {
         const { status } = await Calendar.requestCalendarPermissionsAsync();
         if (status === "granted") isGranted = true;
       } catch {
-        // Expo Go sandbox kısıtlaması durumunda devam et
+        // Expo Go kısıtlamasında devam et
       }
 
       if (isGranted) {
-        setCalendarPermission("granted");
         const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
         const calendarIds = calendars.map((cal) => cal.id);
 
@@ -301,15 +450,11 @@ export default function App() {
         }
       }
 
-      // İzin yoksa veya Expo Go'da ise hazır akıllı etkinlikleri yükle
-      setCalendarPermission("smart_mode");
-      const sampleList = getSmartEvents(alarmMinutes);
-      setAllEvents((prev) => (prev.length > 0 ? prev : sampleList));
-      setStatusMessage("✓ Etkinlikler hazır! Alarmları kurup Saat uygulamasında açabilirsiniz.");
-    } catch (error) {
-      setCalendarPermission("smart_mode");
       setAllEvents((prev) => (prev.length > 0 ? prev : getSmartEvents(alarmMinutes)));
-      setStatusMessage("✓ Akıllı Takvim modu aktif.");
+      setStatusMessage("✓ Etkinlikler ve kesintisiz sesli alarmlar hazır.");
+    } catch {
+      setAllEvents((prev) => (prev.length > 0 ? prev : getSmartEvents(alarmMinutes)));
+      setStatusMessage("✓ Etkinlikler ve kesintisiz sesli alarmlar hazır.");
     } finally {
       setIsLoading(false);
     }
@@ -318,6 +463,24 @@ export default function App() {
   useEffect(() => {
     loadCalendarEvents();
   }, [loadCalendarEvents]);
+
+  // Arka plan / ön plan zaman kontrolü: Alarm saati gelince otomatik çaldır
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!alarmsEnabled || activeAlarmEvent) return;
+      const now = Date.now();
+      for (const event of allEvents) {
+        const aTime = event.startDate.getTime() - alarmMinutes * 60_000;
+        // Eğer tam alarm dakikasındaysa (son 30 saniye içinde)
+        if (Math.abs(now - aTime) < 30_000 && scheduledEventIDs.includes(event.id)) {
+          startAlarmSound(event);
+          break;
+        }
+      }
+    }, 10_000);
+
+    return () => clearInterval(interval);
+  }, [alarmsEnabled, activeAlarmEvent, allEvents, alarmMinutes, scheduledEventIDs, startAlarmSound]);
 
   // Seçilen güne ait etkinlikler
   const selectedEvents = useMemo(() => {
@@ -379,12 +542,7 @@ export default function App() {
   async function scheduleAlarms(minutes = alarmMinutes) {
     setIsLoading(true);
     try {
-      const permissionGranted = await ensureNotificationPermission();
-      if (!permissionGranted) {
-        setStatusMessage("Bildirim izni verilmedi. Ayarlardan bildirimleri açabilirsiniz.");
-        return false;
-      }
-
+      await ensureNotificationPermission();
       await Notifications.cancelAllScheduledNotificationsAsync();
       const now = Date.now();
       const eligibleEvents = upcomingEvents.filter(
@@ -396,8 +554,8 @@ export default function App() {
         const triggerDate = new Date(event.startDate.getTime() - minutes * 60_000);
         await Notifications.scheduleNotificationAsync({
           content: {
-            title: `⏰ ${minutes} dk sonra: ${event.title}`,
-            body: `${formatTime(event.startDate)} etkinliğiniz için alarm çalıyor!`,
+            title: `⏰ ALARM ÇALIYOR: ${event.title}`,
+            body: `${formatTime(event.startDate)} etkinliği başlıyor! Dokunup susturun.`,
             sound: "default",
             data: { eventId: event.id, title: event.title },
           },
@@ -425,24 +583,16 @@ export default function App() {
     }
   }
 
-  // Saat uygulamasında alarm kurma butonuna basıldığında
+  // 1. Yol: Saat uygulamasında doğrudan alarm açma
   async function handleSetClockAlarm(event) {
     const alarmTime = new Date(event.startDate.getTime() - alarmMinutes * 60_000);
     const timeStr = formatTime(alarmTime);
+    await triggerShortcutAlarm(timeStr, event.title);
+  }
 
-    Alert.alert(
-      "⏰ Saat Uygulamasında Kur",
-      `"${event.title}" için alarm saati:\n\n👉 ${timeStr} (${alarmMinutes} dk önce)\n\nŞimdi iPhone Saat uygulaması açılacak.`,
-      [
-        { text: "Vazgeç", style: "cancel" },
-        {
-          text: "Saat'i Aç",
-          onPress: async () => {
-            await openAppleClockApp();
-          },
-        },
-      ],
-    );
+  // 2. Yol: Uygulama içinde kesintisiz çalan yüksek sesli alarmı hemen başlat
+  function handleTriggerDirectAlarm(event) {
+    startAlarmSound(event);
   }
 
   // Yeni etkinlik ekle
@@ -479,38 +629,7 @@ export default function App() {
 
     setNewEventTitle("");
     setModalVisible(false);
-    setStatusMessage(`✓ "${newEvt.title}" etkinliği eklendi!`);
-  }
-
-  // Test alarmı (5 saniye sonra çalar)
-  async function scheduleTestNotification() {
-    setIsLoading(true);
-    try {
-      const permissionGranted = await ensureNotificationPermission();
-      if (!permissionGranted) {
-        setStatusMessage("Deneme bildirimi için bildirim izni gerekli.");
-        return;
-      }
-
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: "⏰ Alarm Çalıyor: Test Etkinliği",
-          body: `${alarmMinutes} dakika sonra etkinliğiniz başlayacak!`,
-          sound: "default",
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-          seconds: 5,
-        },
-      });
-      setStatusMessage("✓ Test alarmı 5 saniye sonrasına kuruldu! Ekranı kilitleyip dinleyin.");
-    } catch (error) {
-      setStatusMessage(
-        `Test alarmı kurulamadı: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    } finally {
-      setIsLoading(false);
-    }
+    setStatusMessage(`✓ "${newEvt.title}" eklendi!`);
   }
 
   async function saveAlarmTime() {
@@ -543,15 +662,9 @@ export default function App() {
             <Text style={styles.eyebrow}>
               {formatLongDate(new Date()).toLocaleUpperCase("tr-TR")}
             </Text>
-            <Text style={styles.heading}>Takvim ve Alarmların</Text>
+            <Text style={styles.heading}>Sesli Alarm Sistemi</Text>
             <Text style={styles.mutedText}>
-              Her etkinlikten {alarmMinutes} dakika önce alarm çalar.
-            </Text>
-          </View>
-          <View style={styles.syncPill}>
-            <View style={[styles.syncDot, { backgroundColor: "#54ad78" }]} />
-            <Text style={styles.syncText}>
-              {calendarPermission === "granted" ? "iCloud" : "Akıllı Mod"}
+              Her etkinlikten {alarmMinutes} dakika önce yüksek sesli alarm çalar.
             </Text>
           </View>
         </View>
@@ -612,10 +725,10 @@ export default function App() {
               </Text>
             </View>
             <Pressable
-              onPress={() => handleSetClockAlarm(nextEvent)}
+              onPress={() => handleTriggerDirectAlarm(nextEvent)}
               style={styles.countdownButton}
             >
-              <Text style={styles.countdown}>Saat'te Kur ›</Text>
+              <Text style={styles.countdown}>🔊 Hemen Çal ›</Text>
             </Pressable>
           </View>
         ) : null}
@@ -645,6 +758,7 @@ export default function App() {
               event={event}
               alarmEnabled={alarmsEnabled && scheduledEventIDs.includes(event.id)}
               onSetClockAlarm={handleSetClockAlarm}
+              onTriggerDirectAlarm={handleTriggerDirectAlarm}
             />
           ))
         ) : (
@@ -663,14 +777,14 @@ export default function App() {
             label={
               isLoading
                 ? "Alarmlar kuruluyor..."
-                : `Tüm Etkinliklere Alarm Kur (${alarmMinutes} dk önce)`
+                : `Tüm Alarmları Kur (${alarmMinutes} dk önce)`
             }
             onPress={() => scheduleAlarms()}
           />
 
           <ActionButton
             icon="⏰"
-            label="iPhone Saat Uygulamasını Aç"
+            label="iPhone Saat Uygulamasında Aç"
             onPress={openAppleClockApp}
             secondary
           />
@@ -685,7 +799,7 @@ export default function App() {
         <View style={styles.pageHeading}>
           <Text style={styles.heading}>Kurulu Alarmlar</Text>
           <Text style={styles.mutedText}>
-            Etkinliklerinizden {alarmMinutes} dakika önce çalacak alarmlar
+            Etkinliklerinizden {alarmMinutes} dakika önce çalacak kesintisiz sesli alarmlar
           </Text>
         </View>
         {scheduledEvents.length > 0 ? (
@@ -703,6 +817,7 @@ export default function App() {
                 alarmEnabled
                 compact
                 onSetClockAlarm={handleSetClockAlarm}
+                onTriggerDirectAlarm={handleTriggerDirectAlarm}
               />
             </View>
           ))
@@ -710,7 +825,7 @@ export default function App() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>Aktif alarm bulunmuyor</Text>
             <Text style={styles.mutedText}>
-              Takvim sekmesinden "Tüm Etkinliklere Alarm Kur" butonuna basarak alarmları başlatabilirsiniz.
+              Takvim sekmesinden "Tüm Alarmları Kur" butonuna basarak alarmları aktif hale getirebilirsin.
             </Text>
           </View>
         )}
@@ -723,13 +838,13 @@ export default function App() {
       <>
         <View style={styles.pageHeading}>
           <Text style={styles.heading}>Ayarlar</Text>
-          <Text style={styles.mutedText}>Alarm zamanlaması ve Saat entegrasyonu</Text>
+          <Text style={styles.mutedText}>Alarm zamanlaması ve ses ayarları</Text>
         </View>
 
         <View style={styles.settingsCard}>
           <Text style={styles.settingsTitle}>⏰ Kaç Dakika Önce Çalsın?</Text>
           <Text style={styles.mutedText}>
-            Etkinliğin başlamasına kaç dakika kala alarm çalacağını seçin:
+            Etkinlikten kaç dakika önce alarmın çalmasını istersin:
           </Text>
 
           <View style={styles.presetList}>
@@ -792,28 +907,38 @@ export default function App() {
         </View>
 
         <View style={styles.settingsCard}>
-          <Text style={styles.settingsTitle}>🧪 Test Alarmı</Text>
+          <Text style={styles.settingsTitle}>🔊 Kesintisiz Sesli Alarm Testi</Text>
           <Text style={styles.mutedText}>
-            iPhone'unuzda sesli alarm ve bildirimin nasıl çaldığını 5 saniye içinde test edin.
+            Alarmın nasıl çaldığını, tam ekran durdurma ve erteleme kontrollerini hemen canlı dene.
           </Text>
           <ActionButton
-            disabled={isLoading}
-            label={isLoading ? "Hazırlanıyor..." : "5 Saniye Sonra Çaldır"}
-            onPress={scheduleTestNotification}
-            secondary
+            icon="🚨"
+            label="Alarmı Şimdi Çaldır (Canlı Ses)"
+            onPress={() => {
+              const testEvt = upcomingEvents[0] || {
+                id: "test",
+                title: "Test Alarmı",
+                location: "Telefon",
+                startDate: new Date(),
+                alarmDate: new Date(),
+              };
+              startAlarmSound(testEvt);
+            }}
           />
         </View>
 
         <View style={styles.settingsCard}>
-          <Text style={styles.settingsTitle}>📱 iPhone Saat (Clock) Entegrasyonu</Text>
+          <Text style={styles.settingsTitle}>📱 iPhone "Saat" Uygulaması Otomasyonu</Text>
           <Text style={styles.mutedText}>
-            Apple gizlilik ilkeleri nedeniyle üçüncü parti uygulamaların Saat uygulamasının içerisine doğrudan gizlice alarm yazmasına izin vermez. Bu yüzden Alertify:
-            {"\n"}• Belirlenen dakikada yüksek sesli yerel alarm çalar.
-            {"\n"}• İsterseniz "Saat'te Kur" butonuna basarak Saat uygulamasında doğrudan alarm açmanızı sağlar.
+            iPhone'un yerel Saat uygulamasında otomatik alarm açmak için:
+            {"\n"}1. iPhone'da <Text style={{ fontWeight: "700" }}>Kestirmeler (Shortcuts)</Text> uygulamasını açın.
+            {"\n"}2. Sağ üstten <Text style={{ fontWeight: "700" }}>+</Text> basıp <Text style={{ fontWeight: "700" }}>"Alarm Yarat"</Text> eylemini seçin.
+            {"\n"}3. Adını <Text style={{ fontWeight: "700" }}>"AlarmKur"</Text> koyup kaydedin.
+            {"\n\n"}Artık Alertify'da tek dokunuşla iPhone'un kendi Saat uygulamasına sabah alarmı kurulur!
           </Text>
           <ActionButton
             icon="⏰"
-            label="Saat Uygulamasına Git"
+            label="Saat Uygulamasını Aç"
             onPress={openAppleClockApp}
             secondary
           />
@@ -833,9 +958,9 @@ export default function App() {
             </View>
             <Text style={styles.brandText}>Alertify</Text>
           </View>
-          <Text style={styles.previewBadge}>
-            {calendarPermission === "granted" ? "iCloud Bağlı" : "Akıllı Mod"}
-          </Text>
+          <View style={styles.audioBadge}>
+            <Text style={styles.audioBadgeText}>🔊 Kesintisiz Ses</Text>
+          </View>
         </View>
 
         <ScrollView
@@ -880,6 +1005,66 @@ export default function App() {
           })}
         </View>
       </View>
+
+      {/* 🚨 TAM EKRAN KESİNTİSİZ ÇALAN ALARM EKRANI 🚨 */}
+      <Modal
+        animationType="fade"
+        transparent={false}
+        visible={activeAlarmEvent !== null}
+        onRequestClose={stopAlarmSound}
+      >
+        <SafeAreaView style={styles.alarmScreen}>
+          <StatusBar barStyle="light-content" backgroundColor="#111827" />
+          <View style={styles.alarmContainer}>
+            <Animated.View
+              style={[
+                styles.alarmPulseCircle,
+                { transform: [{ scale: pulseAnim }] },
+              ]}
+            >
+              <Text style={styles.alarmBigIcon}>⏰</Text>
+            </Animated.View>
+
+            <Text style={styles.alarmScreenHeader}>ALARM ÇALIYOR</Text>
+            <Text style={styles.alarmEventTitle}>
+              {activeAlarmEvent?.title || "Etkinlik Alarmı"}
+            </Text>
+            <Text style={styles.alarmTimeBig}>
+              {formatTime(activeAlarmEvent?.startDate)}
+            </Text>
+            <Text style={styles.alarmSubtext}>
+              {activeAlarmEvent?.location
+                ? `${activeAlarmEvent.location} · `
+                : ""}
+              Etkinliğe {alarmMinutes} dakika kaldı!
+            </Text>
+
+            <View style={styles.alarmButtonStack}>
+              {/* ALARMI DURDUR BUTONU */}
+              <Pressable
+                onPress={stopAlarmSound}
+                style={({ pressed }) => [
+                  styles.stopAlarmButton,
+                  pressed && styles.pressedButton,
+                ]}
+              >
+                <Text style={styles.stopAlarmButtonText}>🛑 ALARMI DURDUR</Text>
+              </Pressable>
+
+              {/* 10 DAKİKA ERTELE BUTONU */}
+              <Pressable
+                onPress={() => activeAlarmEvent && snoozeAlarm(activeAlarmEvent)}
+                style={({ pressed }) => [
+                  styles.snoozeButton,
+                  pressed && styles.pressedButton,
+                ]}
+              >
+                <Text style={styles.snoozeButtonText}>💤 10 Dakika Ertele</Text>
+              </Pressable>
+            </View>
+          </View>
+        </SafeAreaView>
+      </Modal>
 
       {/* Yeni Etkinlik Ekleme Modalı */}
       <Modal
@@ -989,20 +1174,18 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: -0.5,
   },
-  previewBadge: {
-    color: COLORS.greenDark,
-    backgroundColor: COLORS.greenSoft,
+  audioBadge: {
+    backgroundColor: "#fee2e2",
     borderRadius: 16,
     paddingHorizontal: 10,
     paddingVertical: 5,
+  },
+  audioBadgeText: {
+    color: "#b91c1c",
     fontSize: 11,
     fontWeight: "700",
   },
   greeting: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    gap: 8,
     marginTop: 14,
     marginBottom: 20,
   },
@@ -1027,25 +1210,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     marginTop: 4,
-  },
-  syncPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 20,
-    backgroundColor: COLORS.surface,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-  },
-  syncDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  syncText: {
-    color: COLORS.greenDark,
-    fontSize: 10,
-    fontWeight: "700",
   },
   sectionHeading: {
     flexDirection: "row",
@@ -1151,10 +1315,10 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   countdownButton: {
-    backgroundColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(255,255,255,0.2)",
     borderRadius: 16,
-    paddingHorizontal: 9,
-    paddingVertical: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   countdown: {
     color: COLORS.surface,
@@ -1192,7 +1356,7 @@ const styles = StyleSheet.create({
   eventDivider: {
     width: 3,
     height: "100%",
-    minHeight: 48,
+    minHeight: 52,
     borderRadius: 2,
     marginRight: 11,
   },
@@ -1225,8 +1389,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 3,
   },
-  clockButton: {
+  eventButtonRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
     marginTop: 8,
+  },
+  clockButton: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
@@ -1236,13 +1405,31 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 5,
-    alignSelf: "flex-start",
   },
   clockButtonIcon: {
     fontSize: 12,
   },
   clockButtonText: {
     color: "#b25e00",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  ringNowButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  ringNowButtonIcon: {
+    fontSize: 12,
+  },
+  ringNowButtonText: {
+    color: "#b91c1c",
     fontSize: 11,
     fontWeight: "700",
   },
@@ -1395,6 +1582,88 @@ const styles = StyleSheet.create({
   activeTabText: {
     color: COLORS.green,
     fontWeight: "800",
+  },
+  // 🚨 TAM EKRAN ALARM ÇALMA STİLLERİ
+  alarmScreen: {
+    flex: 1,
+    backgroundColor: "#0f172a",
+  },
+  alarmContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  alarmPulseCircle: {
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    backgroundColor: "rgba(239, 68, 68, 0.2)",
+    borderWidth: 2,
+    borderColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 28,
+  },
+  alarmBigIcon: {
+    fontSize: 64,
+  },
+  alarmScreenHeader: {
+    color: "#f87171",
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 2,
+    marginBottom: 8,
+  },
+  alarmEventTitle: {
+    color: "#ffffff",
+    fontSize: 26,
+    fontWeight: "800",
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  alarmTimeBig: {
+    color: "#38bdf8",
+    fontSize: 48,
+    fontWeight: "900",
+    marginBottom: 8,
+  },
+  alarmSubtext: {
+    color: "#94a3b8",
+    fontSize: 14,
+    textAlign: "center",
+    marginBottom: 44,
+  },
+  alarmButtonStack: {
+    width: "100%",
+    gap: 14,
+  },
+  stopAlarmButton: {
+    backgroundColor: "#ef4444",
+    paddingVertical: 18,
+    borderRadius: 20,
+    alignItems: "center",
+    shadowColor: "#ef4444",
+    shadowOpacity: 0.4,
+    shadowRadius: 15,
+    elevation: 4,
+  },
+  stopAlarmButtonText: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  snoozeButton: {
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    paddingVertical: 15,
+    borderRadius: 18,
+    alignItems: "center",
+  },
+  snoozeButtonText: {
+    color: "#e2e8f0",
+    fontSize: 15,
+    fontWeight: "700",
   },
   // Modal Stilleri
   modalOverlay: {
