@@ -17,7 +17,7 @@ import {
   Vibration,
   View,
 } from "react-native";
-import * as Calendar from "expo-calendar";
+import * as Calendar from "expo-calendar/legacy";
 import * as Notifications from "expo-notifications";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 
