@@ -435,7 +435,7 @@ export default function App() {
           sound: "default",
         },
         trigger: null,
-      });
+      }).catch((e) => console.warn("Bildirim schedule uyarısı:", e));
     } catch (err) {
       console.warn("Alarm bildirim hatası:", err);
     }
@@ -494,20 +494,32 @@ export default function App() {
         const oldDate = new Date(prevEarliestTimeRef.current);
         const newDate = earliestUpcomingEvent.startDate;
         const newAlarm = calculateAlarmDate(earliestUpcomingEvent, true);
+        const now = new Date();
 
-        Notifications.cancelAllScheduledNotificationsAsync().then(() => {
-          Notifications.scheduleNotificationAsync({
-            content: {
-              title: `⏰ UYANMA ALARMI: ${earliestUpcomingEvent.title}`,
-              body: `Toplantınız öne çekildi! Yeni saat: ${formatTime(newDate)}`,
-              sound: "default",
-            },
-            trigger: {
-              type: Notifications.SchedulableTriggerInputTypes.DATE,
-              date: newAlarm,
-            },
+        Notifications.cancelAllScheduledNotificationsAsync()
+          .then(async () => {
+            // iOS UNNotificationTrigger.m AssertLine=537 Çökme Koruması:
+            // Sadece alarm zamanı gelecekteyse (now'dan büyükse) bildirim zamanla.
+            if (newAlarm.getTime() > now.getTime()) {
+              await Notifications.scheduleNotificationAsync({
+                content: {
+                  title: `⏰ UYANMA ALARMI: ${earliestUpcomingEvent.title}`,
+                  body: `Toplantınız öne çekildi! Yeni saat: ${formatTime(newDate)}`,
+                  sound: "default",
+                },
+                trigger: {
+                  type: Notifications.SchedulableTriggerInputTypes.DATE,
+                  date: newAlarm,
+                },
+              });
+            } else {
+              // Eğer alarm saati şimdiden küçük veya eşitse (yani vakti gelmişse), doğrudan alarmı çal!
+              await startAlarmSound(earliestUpcomingEvent);
+            }
+          })
+          .catch((err) => {
+            console.warn("Bildirim planlama uyarısı:", err);
           });
-        });
 
         setAutoRescheduleAlert({
           oldTime: formatTime(oldDate),
@@ -521,7 +533,7 @@ export default function App() {
     }
 
     prevEarliestTimeRef.current = currentStartTimeMs;
-  }, [earliestUpcomingEvent, isAutoWatcherActive, calculateAlarmDate]);
+  }, [earliestUpcomingEvent, isAutoWatcherActive, calculateAlarmDate, startAlarmSound]);
 
   // Google Takviminden Etkinlikleri Çekme
   const fetchGoogleCalendarEvents = useCallback(async (url) => {
