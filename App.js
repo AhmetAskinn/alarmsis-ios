@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Keyboard,
   Linking,
   LogBox,
@@ -543,7 +544,7 @@ export default function App() {
     prevEarliestTimeRef.current = currentStartTimeMs;
   }, [earliestUpcomingEvent, isAutoWatcherActive, calculateAlarmDate, startAlarmSound]);
 
-  // Google Takviminden Etkinlikleri Çekme
+  // Google Takviminden Etkinlikleri Çekme (Önbellek Engelleme & Anlık Senkronizasyon)
   const fetchGoogleCalendarEvents = useCallback(async (url) => {
     if (!url || !url.trim()) return [];
     try {
@@ -551,7 +552,15 @@ export default function App() {
       if (fetchUrl.startsWith("webcal://")) {
         fetchUrl = "https://" + fetchUrl.slice(9);
       }
-      const res = await fetch(fetchUrl);
+      // Önbellek baypas: URL sonuna zaman damgası ekle ve no-cache header'ları yolla
+      const sep = fetchUrl.includes("?") ? "&" : "?";
+      const noCacheUrl = `${fetchUrl}${sep}_t=${Date.now()}`;
+      const res = await fetch(noCacheUrl, {
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+        },
+      });
       if (!res.ok) throw new Error("Takvim okunamadı.");
       const text = await res.text();
       return parseICSData(text);
@@ -563,13 +572,18 @@ export default function App() {
 
   const loadAllCalendars = useCallback(async () => {
     let combinedEvents = [];
-    const savedUrl = await SafeStorage.getItem(STORAGE_KEY_GCAL_URL);
+    const savedUrl = (await SafeStorage.getItem(STORAGE_KEY_GCAL_URL)) || savedGcalUrl;
     if (savedUrl) {
       setSavedGcalUrl(savedUrl);
       try {
         const gEvents = await fetchGoogleCalendarEvents(savedUrl);
         combinedEvents = [...combinedEvents, ...gEvents];
-        setStatusMessage(`✓ Google Takviminden ${gEvents.length} toplantı yüklendi.`);
+        setStatusMessage(
+          `✓ Google Takvim senkronize: ${gEvents.length} toplantı (${new Date().toLocaleTimeString(
+            "tr-TR",
+            { hour: "2-digit", minute: "2-digit", second: "2-digit" },
+          )})`,
+        );
       } catch (gErr) {
         setStatusMessage(`Google Takvim uyarısı: ${gErr.message}`);
       }
@@ -622,10 +636,29 @@ export default function App() {
     setAllEvents(
       combinedEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime()),
     );
-  }, [fetchGoogleCalendarEvents]);
+  }, [fetchGoogleCalendarEvents, savedGcalUrl]);
 
+  // Otonom Canlı Takvim Takibi:
+  // 1. Uygulama açıldığında çalıştır
+  // 2. Her 10 saniyede bir Google Takvimini arka planda sessizce tara
+  // 3. Kullanıcı Google Takvim uygulamasından Alertify'a geçtiği anda hemen tara
   useEffect(() => {
     loadAllCalendars();
+
+    const autoSyncTimer = setInterval(() => {
+      loadAllCalendars();
+    }, 10000);
+
+    const appStateSub = AppState.addEventListener("change", (nextAppState) => {
+      if (nextAppState === "active") {
+        loadAllCalendars();
+      }
+    });
+
+    return () => {
+      clearInterval(autoSyncTimer);
+      appStateSub.remove();
+    };
   }, [loadAllCalendars]);
 
   // Simülasyon Testi: Toplantıyı 40 dk öne çekme
