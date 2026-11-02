@@ -5,6 +5,7 @@ import {
   Animated,
   Keyboard,
   Linking,
+  LogBox,
   Modal,
   Platform,
   Pressable,
@@ -20,6 +21,13 @@ import {
 import * as Calendar from "expo-calendar/legacy";
 import * as Notifications from "expo-notifications";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
+
+// Zararsız Expo Go bilgilendirme uyarılarını sessize al
+LogBox.ignoreLogs([
+  "`expo-notifications` functionality is not fully supported in Expo Go",
+  "Android Push notifications",
+  "SafeAreaView has been deprecated",
+]);
 
 // Expo Go için güvenli, çökmeyen bellek deposu
 let MEMORY_GCAL_URL = "";
