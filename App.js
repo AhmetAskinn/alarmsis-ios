@@ -19,6 +19,7 @@ import {
 } from "react-native";
 import * as Calendar from "expo-calendar";
 import * as Notifications from "expo-notifications";
+import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 
 // Expo Go için güvenli, çökmeyen bellek deposu
 let MEMORY_GCAL_URL = "";
@@ -388,12 +389,43 @@ export default function App() {
     }
   }, [activeAlarmEvent, pulseAnim]);
 
+  // Gerçek Yüksek Sesli Alarm Çalıcı (expo-audio)
+  const alarmAudioPlayerRef = useRef(null);
+
   const stopAlarmSound = useCallback(async () => {
+    try {
+      if (alarmAudioPlayerRef.current) {
+        alarmAudioPlayerRef.current.pause();
+        alarmAudioPlayerRef.current.seekTo(0);
+      }
+    } catch (e) {
+      console.warn("Alarm sesi durdurulamadı:", e);
+    }
     Vibration.cancel();
     setActiveAlarmEvent(null);
   }, []);
 
   const startAlarmSound = useCallback(async (event) => {
+    try {
+      // 1. Sessiz modda bile bağırması için iOS Audio Session yapılandır
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        staysActiveInBackground: true,
+        interruptionMode: "doNotMixPersistent",
+      }).catch(() => {});
+
+      // 2. Yüksek sesli alarm dosyasını başlat ve sonsuz döngüye (loop) al
+      if (!alarmAudioPlayerRef.current) {
+        alarmAudioPlayerRef.current = createAudioPlayer(require("./assets/alarm.mp3"));
+      }
+      alarmAudioPlayerRef.current.loop = true;
+      alarmAudioPlayerRef.current.volume = 1.0;
+      alarmAudioPlayerRef.current.seekTo(0);
+      alarmAudioPlayerRef.current.play();
+    } catch (audioErr) {
+      console.warn("Yüksek sesli alarm başlatma hatası:", audioErr);
+    }
+
     try {
       Vibration.vibrate([1000, 500, 1000, 500], true);
       await Notifications.scheduleNotificationAsync({

@@ -18,6 +18,12 @@
         {
           "calendarPermission": "Etkinliklerinizden önce alarm kurabilmek için takvim erişimi gereklidir."
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "enableBackgroundPlayback": true
+        }
       ]
     ],
     "android": {
