@@ -1,3 +1,20 @@
+// Expo Go ve React Native bilgilendirme uyarılarını sessize al
+if (typeof console !== "undefined" && console.warn) {
+  const origWarn = console.warn;
+  console.warn = (...args) => {
+    const text = args[0] ? String(args[0]) : "";
+    if (
+      text.includes("expo-notifications") ||
+      text.includes("SafeAreaView") ||
+      text.includes("Android Push notifications") ||
+      text.includes("development build")
+    ) {
+      return;
+    }
+    origWarn(...args);
+  };
+}
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -10,7 +27,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -19,6 +35,7 @@ import {
   Vibration,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import * as Calendar from "expo-calendar/legacy";
 import * as Notifications from "expo-notifications";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
