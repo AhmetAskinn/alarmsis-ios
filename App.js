@@ -369,6 +369,18 @@ export default function App() {
   const [isAutoWatcherActive, setIsAutoWatcherActive] = useState(true);
   const [autoRescheduleAlert, setAutoRescheduleAlert] = useState(null);
 
+  // 🛌 Uyumaya Devam Koruması (İptal Edilen Toplantı Takibi)
+  const [isSleepInEnabled, setIsSleepInEnabled] = useState(true);
+  const [sleepInAlert, setSleepInAlert] = useState(null);
+  const prevEarliestIdRef = useRef(null);
+  const prevEarliestTitleRef = useRef(null);
+  const prevEarliestAlarmRef = useRef(null);
+
+  // 🧠 Uyanma Garantisi (Matematik Sorusu Görevi)
+  const [isMathMissionEnabled, setIsMathMissionEnabled] = useState(true);
+  const [mathQuestion, setMathQuestion] = useState(null);
+  const [mathFeedback, setMathFeedback] = useState("");
+
   const [allEvents, setAllEvents] = useState([]);
   const [statusMessage, setStatusMessage] = useState("");
   const prevEarliestTimeRef = useRef(null);
@@ -419,6 +431,38 @@ export default function App() {
   // Gerçek Yüksek Sesli Alarm Çalıcı (expo-audio)
   const alarmAudioPlayerRef = useRef(null);
 
+  const generateMathQuestion = useCallback(() => {
+    const ops = ["+", "-", "x"];
+    const op = ops[Math.floor(Math.random() * ops.length)];
+    let n1, n2, ans;
+    if (op === "+") {
+      n1 = Math.floor(Math.random() * 35) + 12;
+      n2 = Math.floor(Math.random() * 25) + 8;
+      ans = n1 + n2;
+    } else if (op === "-") {
+      n1 = Math.floor(Math.random() * 40) + 25;
+      n2 = Math.floor(Math.random() * 20) + 6;
+      ans = n1 - n2;
+    } else {
+      n1 = Math.floor(Math.random() * 7) + 3;
+      n2 = Math.floor(Math.random() * 7) + 3;
+      ans = n1 * n2;
+    }
+    const choices = new Set([ans]);
+    while (choices.size < 4) {
+      const delta = (Math.floor(Math.random() * 6) + 1) * (Math.random() > 0.5 ? 1 : -1);
+      const candidate = ans + delta;
+      if (candidate > 0 && candidate !== ans) {
+        choices.add(candidate);
+      }
+    }
+    return {
+      qText: `${n1} ${op === "x" ? "×" : op} ${n2} = ?`,
+      ans,
+      choices: Array.from(choices).sort(() => Math.random() - 0.5),
+    };
+  }, []);
+
   const stopAlarmSound = useCallback(async () => {
     try {
       if (alarmAudioPlayerRef.current) {
@@ -430,44 +474,77 @@ export default function App() {
     }
     Vibration.cancel();
     setActiveAlarmEvent(null);
+    setMathQuestion(null);
+    setMathFeedback("");
   }, []);
 
-  const startAlarmSound = useCallback(async (event) => {
-    try {
-      // 1. Sessiz modda bile bağırması için iOS Audio Session yapılandır
-      await setAudioModeAsync({
-        playsInSilentMode: true,
-        staysActiveInBackground: true,
-        interruptionMode: "doNotMixPersistent",
-      }).catch(() => {});
-
-      // 2. Yüksek sesli alarm dosyasını başlat ve sonsuz döngüye (loop) al
-      if (!alarmAudioPlayerRef.current) {
-        alarmAudioPlayerRef.current = createAudioPlayer(require("./assets/alarm.mp3"));
+  const handleMathChoice = useCallback(
+    (choice) => {
+      if (!mathQuestion) {
+        stopAlarmSound();
+        return;
       }
-      alarmAudioPlayerRef.current.loop = true;
-      alarmAudioPlayerRef.current.volume = 1.0;
-      alarmAudioPlayerRef.current.seekTo(0);
-      alarmAudioPlayerRef.current.play();
-    } catch (audioErr) {
-      console.warn("Yüksek sesli alarm başlatma hatası:", audioErr);
-    }
+      if (choice === mathQuestion.ans) {
+        setMathFeedback("✓ Harika! Zihniniz uyandı 🚀");
+        Vibration.vibrate([100, 100, 100]);
+        setTimeout(() => {
+          stopAlarmSound();
+        }, 600);
+      } else {
+        setMathFeedback("✕ Yanlış cevap! Yeni soru geliyor...");
+        Vibration.vibrate([300, 150, 300]);
+        setTimeout(() => {
+          setMathQuestion(generateMathQuestion());
+          setMathFeedback("");
+        }, 900);
+      }
+    },
+    [mathQuestion, generateMathQuestion, stopAlarmSound],
+  );
 
-    try {
-      Vibration.vibrate([1000, 500, 1000, 500], true);
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `⏰ UYANMA ALARMI: ${event.title}`,
-          body: `Toplantınız ${formatTime(event.startDate)}'da başlıyor! Uyanma vaktiniz geldi.`,
-          sound: "default",
-        },
-        trigger: null,
-      }).catch((e) => console.warn("Bildirim schedule uyarısı:", e));
-    } catch (err) {
-      console.warn("Alarm bildirim hatası:", err);
-    }
-    setActiveAlarmEvent(event);
-  }, []);
+  const startAlarmSound = useCallback(
+    async (event) => {
+      if (isMathMissionEnabled) {
+        setMathQuestion(generateMathQuestion());
+        setMathFeedback("");
+      }
+      try {
+        // 1. Sessiz modda bile bağırması için iOS Audio Session yapılandır
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          staysActiveInBackground: true,
+          interruptionMode: "doNotMixPersistent",
+        }).catch(() => {});
+
+        // 2. Yüksek sesli alarm dosyasını başlat ve sonsuz döngüye (loop) al
+        if (!alarmAudioPlayerRef.current) {
+          alarmAudioPlayerRef.current = createAudioPlayer(require("./assets/alarm.mp3"));
+        }
+        alarmAudioPlayerRef.current.loop = true;
+        alarmAudioPlayerRef.current.volume = 1.0;
+        alarmAudioPlayerRef.current.seekTo(0);
+        alarmAudioPlayerRef.current.play();
+      } catch (audioErr) {
+        console.warn("Yüksek sesli alarm başlatma hatası:", audioErr);
+      }
+
+      try {
+        Vibration.vibrate([1000, 500, 1000, 500], true);
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `⏰ UYANMA ALARMI: ${event.title}`,
+            body: `Toplantınız ${formatTime(event.startDate)}'da başlıyor! Uyanma vaktiniz geldi.`,
+            sound: "default",
+          },
+          trigger: null,
+        }).catch((e) => console.warn("Bildirim schedule uyarısı:", e));
+      } catch (err) {
+        console.warn("Alarm bildirim hatası:", err);
+      }
+      setActiveAlarmEvent(event);
+    },
+    [isMathMissionEnabled, generateMathQuestion],
+  );
 
   const snoozeAlarm = useCallback(
     async (event) => {
@@ -510,13 +587,73 @@ export default function App() {
     return future.sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0];
   }, [allEvents]);
 
-  // Otonom Canlı Takip Motoru
+  // Otonom Canlı Takip Motoru (Saat Değişimi & İptal Koruması)
   useEffect(() => {
-    if (!isAutoWatcherActive || !earliestUpcomingEvent) return;
+    if (!isAutoWatcherActive) return;
+
+    // 1. İPTAL KORUMASI: Önceki ilk toplantı takvimden silindi mi?
+    if (isSleepInEnabled && prevEarliestIdRef.current) {
+      const stillExists = allEvents.some((e) => e.id === prevEarliestIdRef.current);
+      if (!stillExists) {
+        // TOPLANTI İPTAL EDİLDİ!
+        const oldTitle = prevEarliestTitleRef.current || "Toplantı";
+        const oldAlarm = prevEarliestAlarmRef.current;
+        const nextAlarm = earliestUpcomingEvent
+          ? calculateAlarmDate(earliestUpcomingEvent, true)
+          : null;
+        let extraMins = 0;
+        if (oldAlarm && nextAlarm) {
+          extraMins = Math.max(
+            0,
+            Math.round((nextAlarm.getTime() - oldAlarm.getTime()) / 60_000),
+          );
+        }
+
+        Notifications.cancelAllScheduledNotificationsAsync().catch(() => {});
+
+        if (earliestUpcomingEvent && nextAlarm && nextAlarm.getTime() > Date.now()) {
+          Notifications.scheduleNotificationAsync({
+            content: {
+              title: `⏰ YENİ ALARM: ${earliestUpcomingEvent.title}`,
+              body: `Önceki toplantı iptal edildi! Yeni alarm: ${formatTime(nextAlarm)}`,
+              sound: "default",
+            },
+            trigger: {
+              type: Notifications.SchedulableTriggerInputTypes.DATE,
+              date: nextAlarm,
+            },
+          }).catch(() => {});
+        }
+
+        setSleepInAlert({
+          cancelledTitle: oldTitle,
+          extraMinutes: extraMins,
+          nextTitle: earliestUpcomingEvent ? earliestUpcomingEvent.title : null,
+          nextTime: earliestUpcomingEvent
+            ? formatTime(earliestUpcomingEvent.startDate)
+            : null,
+          nextAlarm: nextAlarm ? formatTime(nextAlarm) : null,
+        });
+
+        Vibration.vibrate([150, 100, 150]);
+      }
+    }
+
+    if (!earliestUpcomingEvent) {
+      prevEarliestTimeRef.current = null;
+      prevEarliestIdRef.current = null;
+      prevEarliestTitleRef.current = null;
+      prevEarliestAlarmRef.current = null;
+      return;
+    }
 
     const currentStartTimeMs = earliestUpcomingEvent.startDate.getTime();
 
-    if (prevEarliestTimeRef.current !== null) {
+    // 2. SAAT DEĞİŞİMİ: Toplantı saati öne mi çekildi veya ertelendi mi?
+    if (
+      prevEarliestTimeRef.current !== null &&
+      prevEarliestIdRef.current === earliestUpcomingEvent.id
+    ) {
       if (prevEarliestTimeRef.current !== currentStartTimeMs) {
         const oldDate = new Date(prevEarliestTimeRef.current);
         const newDate = earliestUpcomingEvent.startDate;
@@ -526,12 +663,11 @@ export default function App() {
         Notifications.cancelAllScheduledNotificationsAsync()
           .then(async () => {
             // iOS UNNotificationTrigger.m AssertLine=537 Çökme Koruması:
-            // Sadece alarm zamanı gelecekteyse (now'dan büyükse) bildirim zamanla.
             if (newAlarm.getTime() > now.getTime()) {
               await Notifications.scheduleNotificationAsync({
                 content: {
                   title: `⏰ UYANMA ALARMI: ${earliestUpcomingEvent.title}`,
-                  body: `Toplantınız öne çekildi! Yeni saat: ${formatTime(newDate)}`,
+                  body: `Toplantınız güncellendi! Yeni saat: ${formatTime(newDate)}`,
                   sound: "default",
                 },
                 trigger: {
@@ -540,7 +676,6 @@ export default function App() {
                 },
               });
             } else {
-              // Eğer alarm saati şimdiden küçük veya eşitse (yani vakti gelmişse), doğrudan alarmı çal!
               await startAlarmSound(earliestUpcomingEvent);
             }
           })
@@ -560,7 +695,17 @@ export default function App() {
     }
 
     prevEarliestTimeRef.current = currentStartTimeMs;
-  }, [earliestUpcomingEvent, isAutoWatcherActive, calculateAlarmDate, startAlarmSound]);
+    prevEarliestIdRef.current = earliestUpcomingEvent.id;
+    prevEarliestTitleRef.current = earliestUpcomingEvent.title;
+    prevEarliestAlarmRef.current = calculateAlarmDate(earliestUpcomingEvent, true);
+  }, [
+    allEvents,
+    earliestUpcomingEvent,
+    isAutoWatcherActive,
+    isSleepInEnabled,
+    calculateAlarmDate,
+    startAlarmSound,
+  ]);
 
   // Google Takviminden Etkinlikleri Çekme (Önbellek Engelleme & Anlık Senkronizasyon)
   const fetchGoogleCalendarEvents = useCallback(async (url) => {
@@ -716,6 +861,16 @@ export default function App() {
     );
   }
 
+  // Simülasyon Testi: Toplantıyı İptal Et / Sil (Uyumaya Devam Koruması)
+  function simulateCancelEarliestMeeting() {
+    if (!earliestUpcomingEvent) {
+      Alert.alert("Bilgi", "İptal edilecek toplantı bulunamadı.");
+      return;
+    }
+    const cancelledId = earliestUpcomingEvent.id;
+    setAllEvents((prev) => prev.filter((e) => e.id !== cancelledId));
+  }
+
   // Toplantıya özel süre düzenleme modalını aç
   function handleOpenEditDuration(event, currentMinutes) {
     setEditingEvent(event);
@@ -849,6 +1004,47 @@ export default function App() {
           </View>
         ) : null}
 
+        {/* 🛌 UYUMAYA DEVAM KORUMASI (İPTAL BİLDİRİM BANNER'I) */}
+        {sleepInAlert ? (
+          <View style={styles.sleepInBanner}>
+            <View style={styles.sleepInIconWrap}>
+              <Text style={{ fontSize: 24 }}>🛌</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sleepInTitle}>
+                TOPLANTI İPTAL EDİLDİ — UYUMAYA DEVAM ET!
+              </Text>
+              <Text style={styles.sleepInBody}>
+                "{sleepInAlert.cancelledTitle}" toplantısı takvimden kaldırıldı!
+                {"\n"}
+                {sleepInAlert.extraMinutes > 0 ? (
+                  <Text style={{ fontWeight: "800", color: "#34d399" }}>
+                    ☕ Sabah alarmı susturuldu, {sleepInAlert.extraMinutes} dakika daha fazla uyudunuz!
+                  </Text>
+                ) : (
+                  <Text style={{ fontWeight: "800", color: "#34d399" }}>
+                    Sabah alarmı susturuldu, bugün başka toplantı yok. Rahatça dinlenin!
+                  </Text>
+                )}
+                {sleepInAlert.nextTitle ? (
+                  <>
+                    {"\n"}
+                    <Text style={{ fontSize: 11, color: "#6ee7b7" }}>
+                      Sıradaki: {sleepInAlert.nextTitle} ({sleepInAlert.nextTime}) • Yeni Alarm: {sleepInAlert.nextAlarm}
+                    </Text>
+                  </>
+                ) : null}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => setSleepInAlert(null)}
+              style={styles.closeAlertBtn}
+            >
+              <Text style={{ color: "#ffffff", fontWeight: "700" }}>✕</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         <View style={styles.greeting}>
           <View style={styles.greetingCopy}>
             <Text style={styles.eyebrow}>
@@ -931,18 +1127,32 @@ export default function App() {
               </View>
             </View>
 
-            {/* SİMÜLASYON TEST BUTONU */}
-            <Pressable
-              onPress={simulateRescheduleEarlier}
-              style={({ pressed }) => [
-                styles.simulateButton,
-                pressed && styles.pressedButton,
-              ]}
-            >
-              <Text style={styles.simulateButtonText}>
-                🧪 Test Et: Toplantıyı 40 Dk Öne Çek (09:30 ➔ 08:50)
-              </Text>
-            </Pressable>
+            {/* SİMÜLASYON TEST BUTONLARI */}
+            <View style={styles.simulationBtnRow}>
+              <Pressable
+                onPress={simulateRescheduleEarlier}
+                style={({ pressed }) => [
+                  styles.simulateButton,
+                  pressed && styles.pressedButton,
+                ]}
+              >
+                <Text style={styles.simulateButtonText}>
+                  ⚡ Test Et: 40 Dk Öne Çek (09:30 ➔ 08:50)
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={simulateCancelEarliestMeeting}
+                style={({ pressed }) => [
+                  styles.simulateCancelButton,
+                  pressed && styles.pressedButton,
+                ]}
+              >
+                <Text style={styles.simulateCancelButtonText}>
+                  🛌 Test Et: Toplantıyı İptal Et (Uyumaya Devam)
+                </Text>
+              </Pressable>
+            </View>
           </View>
         ) : null}
 
@@ -1167,6 +1377,48 @@ export default function App() {
           </Text>
         </View>
 
+        {/* 4. 🧠 UYANMA GARANTİSİ (MATEMATİK GÖREVİ) */}
+        <View style={styles.settingsCard}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={styles.settingsTitle}>🧠 Uyanma Garantisi (Matematik Sorusu)</Text>
+            <Pressable
+              onPress={() => setIsMathMissionEnabled(!isMathMissionEnabled)}
+              style={[
+                styles.toggleBtn,
+                { backgroundColor: isMathMissionEnabled ? COLORS.blue : COLORS.line },
+              ]}
+            >
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 11 }}>
+                {isMathMissionEnabled ? "AÇIK" : "KAPALI"}
+              </Text>
+            </Pressable>
+          </View>
+          <Text style={styles.mutedText}>
+            Alarm çaldığında refleksle kapatıp geri uyumayı önlemek için ekrana 1 adet zihin sorusu getirir.
+          </Text>
+        </View>
+
+        {/* 5. 🛌 UYUMAYA DEVAM KORUMASI */}
+        <View style={styles.settingsCard}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={styles.settingsTitle}>🛌 Uyumaya Devam Koruması (İptal Takibi)</Text>
+            <Pressable
+              onPress={() => setIsSleepInEnabled(!isSleepInEnabled)}
+              style={[
+                styles.toggleBtn,
+                { backgroundColor: isSleepInEnabled ? COLORS.green : COLORS.line },
+              ]}
+            >
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 11 }}>
+                {isSleepInEnabled ? "AÇIK" : "KAPALI"}
+              </Text>
+            </Pressable>
+          </View>
+          <Text style={styles.mutedText}>
+            Sabah toplantınız gece veya sabah iptal edilirse alarmı otomatik susturur ve fazladan uyumanızı sağlar.
+          </Text>
+        </View>
+
         <View style={styles.settingsCard}>
           <Text style={styles.settingsTitle}>🔊 Kesintisiz Alarm Testi</Text>
           <Text style={styles.mutedText}>
@@ -1369,16 +1621,62 @@ export default function App() {
               Toplantı vaktiniz yaklaştı! Hazırlanıp katılabilirsiniz.
             </Text>
 
+            {/* 🧠 UYANMA GÖREVİ (MATEMATİK SORUSU) */}
+            {isMathMissionEnabled && mathQuestion ? (
+              <View style={styles.mathMissionCard}>
+                <View style={styles.mathMissionHeader}>
+                  <Text style={styles.mathMissionIcon}>🧠</Text>
+                  <Text style={styles.mathMissionTitle}>UYANMA GÖREVİ: ZİHNİNİ AÇ</Text>
+                </View>
+                <Text style={styles.mathMissionPrompt}>
+                  Alarmı susturmak için doğru cevaba dokunun:
+                </Text>
+                <View style={styles.mathQuestionBox}>
+                  <Text style={styles.mathQuestionText}>{mathQuestion.qText}</Text>
+                </View>
+
+                {mathFeedback ? (
+                  <Text
+                    style={[
+                      styles.mathFeedbackText,
+                      mathFeedback.startsWith("✓")
+                        ? styles.mathFeedbackSuccess
+                        : styles.mathFeedbackError,
+                    ]}
+                  >
+                    {mathFeedback}
+                  </Text>
+                ) : null}
+
+                <View style={styles.mathChoiceGrid}>
+                  {mathQuestion.choices.map((choice) => (
+                    <Pressable
+                      key={choice}
+                      onPress={() => handleMathChoice(choice)}
+                      style={({ pressed }) => [
+                        styles.mathChoiceBtn,
+                        pressed && styles.pressedButton,
+                      ]}
+                    >
+                      <Text style={styles.mathChoiceBtnText}>{choice}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
             <View style={styles.alarmButtonStack}>
-              <Pressable
-                onPress={stopAlarmSound}
-                style={({ pressed }) => [
-                  styles.stopAlarmButton,
-                  pressed && styles.pressedButton,
-                ]}
-              >
-                <Text style={styles.stopAlarmButtonText}>🛑 ALARMI DURDUR</Text>
-              </Pressable>
+              {!isMathMissionEnabled ? (
+                <Pressable
+                  onPress={stopAlarmSound}
+                  style={({ pressed }) => [
+                    styles.stopAlarmButton,
+                    pressed && styles.pressedButton,
+                  ]}
+                >
+                  <Text style={styles.stopAlarmButtonText}>🛑 ALARMI DURDUR</Text>
+                </Pressable>
+              ) : null}
 
               <Pressable
                 onPress={() => activeAlarmEvent && snoozeAlarm(activeAlarmEvent)}
@@ -1389,6 +1687,18 @@ export default function App() {
               >
                 <Text style={styles.snoozeButtonText}>💤 10 Dakika Ertele</Text>
               </Pressable>
+
+              {isMathMissionEnabled ? (
+                <Pressable
+                  onLongPress={stopAlarmSound}
+                  delayLongPress={2500}
+                  style={{ marginTop: 8 }}
+                >
+                  <Text style={styles.emergencyBypassText}>
+                    Acil durum: 3 sn basılı tutarak sustur
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         </SafeAreaView>
@@ -2177,6 +2487,143 @@ const styles = StyleSheet.create({
     color: "#e2e8f0",
     fontSize: 15,
     fontWeight: "700",
+  },
+  // İptal (Uyumaya Devam) Banner Stilleri
+  sleepInBanner: {
+    backgroundColor: "#064e3b",
+    borderRadius: 18,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1.5,
+    borderColor: "#10b981",
+    marginBottom: 16,
+    shadowColor: "#10b981",
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  sleepInIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(16, 185, 129, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sleepInTitle: {
+    color: "#6ee7b7",
+    fontWeight: "900",
+    fontSize: 13,
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  sleepInBody: {
+    color: "#e2e8f0",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  // Simülasyon Buton Satırı
+  simulationBtnRow: {
+    gap: 8,
+    marginTop: 10,
+  },
+  simulateCancelButton: {
+    backgroundColor: "#047857",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    alignItems: "center",
+  },
+  simulateCancelButtonText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  // Matematik Görevi Stilleri (Alarm Modal)
+  mathMissionCard: {
+    width: "100%",
+    backgroundColor: "rgba(30, 41, 59, 0.95)",
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1.5,
+    borderColor: "#38bdf8",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  mathMissionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  mathMissionIcon: {
+    fontSize: 18,
+  },
+  mathMissionTitle: {
+    color: "#38bdf8",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  mathMissionPrompt: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginBottom: 10,
+  },
+  mathQuestionBox: {
+    backgroundColor: "#0f172a",
+    paddingHorizontal: 28,
+    paddingVertical: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#334155",
+    marginBottom: 10,
+  },
+  mathQuestionText: {
+    color: "#ffffff",
+    fontSize: 26,
+    fontWeight: "900",
+    letterSpacing: 2,
+  },
+  mathFeedbackText: {
+    fontSize: 13,
+    fontWeight: "800",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  mathFeedbackSuccess: {
+    color: "#34d399",
+  },
+  mathFeedbackError: {
+    color: "#f87171",
+  },
+  mathChoiceGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    width: "100%",
+    gap: 8,
+  },
+  mathChoiceBtn: {
+    width: "48%",
+    backgroundColor: "#334155",
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mathChoiceBtnText: {
+    color: "#ffffff",
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  emergencyBypassText: {
+    color: "#64748b",
+    fontSize: 11,
+    textAlign: "center",
+    textDecorationLine: "underline",
   },
   // Modal Stilleri
   modalOverlay: {
