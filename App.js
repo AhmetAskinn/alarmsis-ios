@@ -372,6 +372,7 @@ export default function App() {
   const [allEvents, setAllEvents] = useState([]);
   const [statusMessage, setStatusMessage] = useState("");
   const prevEarliestTimeRef = useRef(null);
+  const isFetchingRef = useRef(false);
 
   // Google Takvim Bağlantı Modalı
   const [gcalModalVisible, setGcalModalVisible] = useState(false);
@@ -582,77 +583,91 @@ export default function App() {
       const text = await res.text();
       return parseICSData(text);
     } catch (err) {
+      if (err?.message?.includes("cancelled") || err?.name === "AbortError") {
+        // iOS arka plana geçişte veya kilitte isteği iptal edebilir, bu normaldir
+        return [];
+      }
       console.warn("Google Takvim hatası:", err);
       throw err;
     }
   }, []);
 
   const loadAllCalendars = useCallback(async () => {
-    let combinedEvents = [];
-    const savedUrl = (await SafeStorage.getItem(STORAGE_KEY_GCAL_URL)) || savedGcalUrl;
-    if (savedUrl) {
-      setSavedGcalUrl(savedUrl);
-      try {
-        const gEvents = await fetchGoogleCalendarEvents(savedUrl);
-        combinedEvents = [...combinedEvents, ...gEvents];
-        setStatusMessage(
-          `✓ Google Takvim senkronize: ${gEvents.length} toplantı (${new Date().toLocaleTimeString(
-            "tr-TR",
-            { hour: "2-digit", minute: "2-digit", second: "2-digit" },
-          )})`,
-        );
-      } catch (gErr) {
-        setStatusMessage(`Google Takvim uyarısı: ${gErr.message}`);
-      }
-    }
-
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
     try {
-      const { status } = await Calendar.requestCalendarPermissionsAsync();
-      if (status === "granted") {
-        const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
-        const calendarIds = calendars.map((cal) => cal.id);
-
-        if (calendarIds.length > 0) {
-          const startDate = new Date();
-          startDate.setHours(0, 0, 0, 0);
-          const endDate = new Date();
-          endDate.setDate(endDate.getDate() + 7);
-
-          const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
-          const calMap = new Map();
-          calendars.forEach((c) => calMap.set(c.id, { title: c.title, color: c.color }));
-
-          const mappedApple = events
-            .map((evt) => {
-              const calInfo = calMap.get(evt.calendarId) || {};
-              const sDate = new Date(evt.startDate);
-              return {
-                id: `apple-${evt.id}`,
-                title: evt.title || "Apple Etkinliği",
-                location: evt.location || "",
-                startDate: sDate,
-                endDate: new Date(evt.endDate),
-                calendarTitle: calInfo.title || "Apple Takvim",
-                color: calInfo.color || COLORS.green,
-                source: "apple",
-              };
-            })
-            .filter((evt) => evt.startDate > new Date());
-
-          combinedEvents = [...combinedEvents, ...mappedApple];
+      let combinedEvents = [];
+      const savedUrl = (await SafeStorage.getItem(STORAGE_KEY_GCAL_URL)) || savedGcalUrl;
+      if (savedUrl) {
+        setSavedGcalUrl(savedUrl);
+        try {
+          const gEvents = await fetchGoogleCalendarEvents(savedUrl);
+          if (gEvents && gEvents.length > 0) {
+            combinedEvents = [...combinedEvents, ...gEvents];
+            setStatusMessage(
+              `✓ Google Takvim senkronize: ${gEvents.length} toplantı (${new Date().toLocaleTimeString(
+                "tr-TR",
+                { hour: "2-digit", minute: "2-digit", second: "2-digit" },
+              )})`,
+            );
+          }
+        } catch (gErr) {
+          if (!gErr?.message?.includes("cancelled")) {
+            setStatusMessage(`Google Takvim uyarısı: ${gErr.message}`);
+          }
         }
       }
-    } catch {
-      // devam et
-    }
 
-    if (combinedEvents.length === 0) {
-      combinedEvents = getInitialSmartEvents();
-    }
+      try {
+        const { status } = await Calendar.requestCalendarPermissionsAsync();
+        if (status === "granted") {
+          const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+          const calendarIds = calendars.map((cal) => cal.id);
 
-    setAllEvents(
-      combinedEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime()),
-    );
+          if (calendarIds.length > 0) {
+            const startDate = new Date();
+            startDate.setHours(0, 0, 0, 0);
+            const endDate = new Date();
+            endDate.setDate(endDate.getDate() + 7);
+
+            const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
+            const calMap = new Map();
+            calendars.forEach((c) => calMap.set(c.id, { title: c.title, color: c.color }));
+
+            const mappedApple = events
+              .map((evt) => {
+                const calInfo = calMap.get(evt.calendarId) || {};
+                const sDate = new Date(evt.startDate);
+                return {
+                  id: `apple-${evt.id}`,
+                  title: evt.title || "Apple Etkinliği",
+                  location: evt.location || "",
+                  startDate: sDate,
+                  endDate: new Date(evt.endDate),
+                  calendarTitle: calInfo.title || "Apple Takvim",
+                  color: calInfo.color || COLORS.green,
+                  source: "apple",
+                };
+              })
+              .filter((evt) => evt.startDate > new Date());
+
+            combinedEvents = [...combinedEvents, ...mappedApple];
+          }
+        }
+      } catch {
+        // devam et
+      }
+
+      if (combinedEvents.length === 0) {
+        combinedEvents = getInitialSmartEvents();
+      }
+
+      setAllEvents(
+        combinedEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime()),
+      );
+    } finally {
+      isFetchingRef.current = false;
+    }
   }, [fetchGoogleCalendarEvents, savedGcalUrl]);
 
   // Otonom Canlı Takvim Takibi:
